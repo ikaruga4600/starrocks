@@ -86,7 +86,7 @@ Status DataConsumerPool::get_consumer_grp(StreamLoadContext* ctx, std::shared_pt
     return Status::OK();
 }
 
-void DataConsumerPool::return_consumer(std::shared_ptr<DataConsumer> consumer) {
+void DataConsumerPool::return_consumer(const std::shared_ptr<DataConsumer>& consumer) {
     std::unique_lock<std::mutex> l(_lock);
 
     if (_pool.size() == _max_pool_size) {
@@ -98,11 +98,10 @@ void DataConsumerPool::return_consumer(std::shared_ptr<DataConsumer> consumer) {
     consumer->reset();
     _pool.push_back(consumer);
     VLOG(3) << "return the data consumer: " << consumer->id() << ", current pool size: " << _pool.size();
-    return;
 }
 
 void DataConsumerPool::return_consumers(DataConsumerGroup* grp) {
-    for (std::shared_ptr<DataConsumer> consumer : grp->consumers()) {
+    for (const std::shared_ptr<DataConsumer>& consumer : grp->consumers()) {
         return_consumer(consumer);
     }
 }

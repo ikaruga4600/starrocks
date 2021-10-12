@@ -21,8 +21,7 @@
 
 #include "udf/udf.h"
 
-#include <assert.h>
-
+#include <cassert>
 #include <iostream>
 #include <sstream>
 
@@ -68,7 +67,7 @@ public:
     const std::string& user() const { return _user; }
 
 private:
-    std::string _user = "";
+    std::string _user;
 };
 } // namespace starrocks
 #else
@@ -84,8 +83,8 @@ FunctionContextImpl::FunctionContextImpl(starrocks_udf::FunctionContext* parent)
           _num_updates(0),
           _num_removes(0),
           _context(parent),
-          _pool(NULL),
-          _state(NULL),
+          _pool(nullptr),
+          _state(nullptr),
           _debug(false),
           _version(starrocks_udf::FunctionContext::V2_0),
           _num_warnings(0),
@@ -111,7 +110,7 @@ void FunctionContextImpl::close() {
     }
 
     free(_varargs_buffer);
-    _varargs_buffer = NULL;
+    _varargs_buffer = nullptr;
 
     _closed = true;
 }
@@ -123,8 +122,8 @@ uint8_t* FunctionContextImpl::allocate_local(int64_t byte_size) {
 }
 
 void FunctionContextImpl::free_local_allocations() {
-    for (int i = 0; i < _local_allocations.size(); ++i) {
-        _pool->free(_local_allocations[i]);
+    for (auto& _local_allocation : _local_allocations) {
+        _pool->free(_local_allocation);
     }
 
     _local_allocations.clear();
@@ -205,8 +204,8 @@ static const int MAX_WARNINGS = 1000;
 FunctionContext* FunctionContext::create_test_context() {
     FunctionContext* context = new FunctionContext();
     context->impl()->_debug = true;
-    context->impl()->_state = NULL;
-    context->impl()->_pool = new starrocks::FreePool(NULL);
+    context->impl()->_state = nullptr;
+    context->impl()->_pool = new starrocks::FreePool(nullptr);
     return context;
 }
 
@@ -232,8 +231,8 @@ FunctionContext::StarRocksVersion FunctionContext::version() const {
 }
 
 const char* FunctionContext::user() const {
-    if (_impl->_state == NULL) {
-        return NULL;
+    if (_impl->_state == nullptr) {
+        return nullptr;
     }
 
     return _impl->_state->user().c_str();
@@ -281,7 +280,7 @@ uint8_t* FunctionContext::reallocate(uint8_t* ptr, int byte_size) {
 }
 
 void FunctionContext::free(uint8_t* buffer) {
-    if (buffer == NULL) {
+    if (buffer == nullptr) {
         return;
     }
 
@@ -350,7 +349,7 @@ bool FunctionContext::add_warning(const char* warning_msg) {
     std::stringstream ss;
     ss << "UDF WARNING: " << warning_msg;
 
-    if (_impl->_state != NULL) {
+    if (_impl->_state != nullptr) {
         return _impl->_state->log_error(ss.str());
     } else {
         std::cerr << ss.str() << std::endl;
@@ -399,7 +398,7 @@ void StringVal::append(FunctionContext* ctx, const uint8_t* buf, size_t buf_len)
                 "Concatenated string length larger than allowed limit of "
                 "1 GB character data.");
         ctx->free(ptr);
-        ptr = NULL;
+        ptr = nullptr;
         len = 0;
         is_null = true;
     } else {
@@ -415,7 +414,7 @@ void StringVal::append(FunctionContext* ctx, const uint8_t* buf, size_t buf_len,
                 "Concatenated string length larger than allowed limit of "
                 "1 GB character data.");
         ctx->free(ptr);
-        ptr = NULL;
+        ptr = nullptr;
         len = 0;
         is_null = true;
     } else {
@@ -443,7 +442,7 @@ bool DecimalVal::operator==(const DecimalVal& other) const {
 
 const FunctionContext::TypeDesc* FunctionContext::get_arg_type(int arg_idx) const {
     if (arg_idx < 0 || arg_idx >= _impl->_arg_types.size()) {
-        return NULL;
+        return nullptr;
     }
     return &_impl->_arg_types[arg_idx];
 }
@@ -487,13 +486,11 @@ void HllVal::agg_parse_and_cal(FunctionContext* ctx, const HllVal& other) {
             uint8_t first_one_bit = __builtin_ctzl(hash_value >> starrocks::HLL_COLUMN_PRECISION) + 1;
             pdata[idx] = std::max(pdata[idx], first_one_bit);
         }
-    } else if (resolver.get_hll_data_type() == starrocks::HLL_DATA_SPRASE) {
+    } else if (resolver.get_hll_data_type() == starrocks::HLL_DATA_SPARSE) {
         std::map<starrocks::HllSetResolver::SparseIndexType, starrocks::HllSetResolver::SparseValueType>& sparse_map =
                 resolver.get_sparse_map();
-        for (std::map<starrocks::HllSetResolver::SparseIndexType, starrocks::HllSetResolver::SparseValueType>::iterator
-                     iter = sparse_map.begin();
-             iter != sparse_map.end(); iter++) {
-            pdata[iter->first] = std::max(pdata[iter->first], (uint8_t)iter->second);
+        for (auto& iter : sparse_map) {
+            pdata[iter.first] = std::max(pdata[iter.first], (uint8_t)iter.second);
         }
     } else if (resolver.get_hll_data_type() == starrocks::HLL_DATA_FULL) {
         char* full_value = resolver.get_full_value();

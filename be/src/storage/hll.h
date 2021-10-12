@@ -69,7 +69,7 @@ const static int HLL_EMPTY_SIZE = 1;
 // maybe can be other number. If you are interested, you can try other number and see
 // if it will be better.
 //
-// HLL_DATA_SPRASE: only store non-zero registers. If the number of non-zero registers
+// HLL_DATA_SPARSE: only store non-zero registers. If the number of non-zero registers
 // is not greater than 4096, set is encoded in this format. The max space occupied is
 // (1 + 4 + 3 * 4096) = 12293.
 //
@@ -83,7 +83,7 @@ const static int HLL_EMPTY_SIZE = 1;
 enum HllDataType {
     HLL_DATA_EMPTY = 0,
     HLL_DATA_EXPLICIT = 1,
-    HLL_DATA_SPRASE = 2,
+    HLL_DATA_SPARSE = 2,
     HLL_DATA_FULL = 3,
 };
 
@@ -125,7 +125,7 @@ public:
         return *this;
     }
 
-    HyperLogLog(HyperLogLog&& other) : _type(other._type), _hash_set(std::move(other._hash_set)) {
+    HyperLogLog(HyperLogLog&& other) noexcept : _type(other._type), _hash_set(std::move(other._hash_set)) {
         if (_registers.data != nullptr) {
             ChunkAllocator::instance()->free(_registers);
         }
@@ -135,7 +135,7 @@ public:
         other._registers.data = nullptr;
     }
 
-    HyperLogLog& operator=(HyperLogLog&& other) {
+    HyperLogLog& operator=(HyperLogLog&& other) noexcept {
         if (this != &other) {
             this->_type = other._type;
             this->_hash_set = std::move(other._hash_set);
@@ -210,7 +210,7 @@ private:
     HllDataType _type = HLL_DATA_EMPTY;
     phmap::flat_hash_set<uint64_t> _hash_set;
 
-    // This field is much space consumming(HLL_REGISTERS_COUNT), we craete
+    // This field is much space consumming(HLL_REGISTERS_COUNT), we create
     // it only when it is really needed.
     // Allocate memory by ChunkAllocator in order to reuse memory.
     Chunk _registers;
@@ -238,13 +238,8 @@ private:
 class HllSetResolver {
 public:
     HllSetResolver()
-            : _buf_ref(nullptr),
-              _buf_len(0),
-              _set_type(HLL_DATA_EMPTY),
-              _full_value_position(nullptr),
-              _explicit_value(nullptr),
-              _explicit_num(0),
-              _sparse_count(0) {}
+
+    {}
 
     ~HllSetResolver() = default;
 
@@ -284,14 +279,14 @@ public:
     void parse();
 
 private:
-    char* _buf_ref;        // set
-    int _buf_len;          // set len
-    HllDataType _set_type; //set type
-    char* _full_value_position;
-    uint64_t* _explicit_value;
-    ExpliclitLengthValueType _explicit_num;
+    char* _buf_ref{nullptr};               // set
+    int _buf_len{0};                       // set len
+    HllDataType _set_type{HLL_DATA_EMPTY}; //set type
+    char* _full_value_position{nullptr};
+    uint64_t* _explicit_value{nullptr};
+    ExpliclitLengthValueType _explicit_num{0};
     std::map<SparseIndexType, SparseValueType> _sparse_map;
-    SparseLengthValueType* _sparse_count;
+    SparseLengthValueType* _sparse_count{nullptr};
 };
 
 // todo(kks): remove this when dpp_sink class was removed

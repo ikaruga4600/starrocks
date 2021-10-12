@@ -41,13 +41,13 @@ Status TableFunctionNode::init(const TPlanNode& node, RuntimeState* state) {
     TFunction table_fn = node.table_function_node.table_function.nodes[0].fn;
     std::string table_function_name = table_fn.name.function_name;
     std::vector<PrimitiveType> arg_types;
-    for (TTypeDesc ttype_desc : table_fn.arg_types) {
+    for (const TTypeDesc& ttype_desc : table_fn.arg_types) {
         TypeDescriptor arg_type = TypeDescriptor::from_thrift(ttype_desc);
         arg_types.emplace_back(arg_type.type);
     }
 
     std::vector<PrimitiveType> return_types;
-    for (TTypeDesc ttype_desc : table_fn.table_fn.ret_types) {
+    for (const TTypeDesc& ttype_desc : table_fn.table_fn.ret_types) {
         TypeDescriptor return_type = TypeDescriptor::from_thrift(ttype_desc);
         return_types.emplace_back(return_type.type);
     }
@@ -103,8 +103,9 @@ Status TableFunctionNode::get_next(RuntimeState* state, ChunkPtr* chunk, bool* e
         }
     }
 
-    for (int outer_idx = 0; outer_idx < _outer_slots.size(); ++outer_idx) {
-        output_columns.emplace_back(_input_chunk_ptr->get_column_by_slot_id(_outer_slots[outer_idx])->clone_empty());
+    output_columns.reserve(_outer_slots.size());
+    for (int _outer_slot : _outer_slots) {
+        output_columns.emplace_back(_input_chunk_ptr->get_column_by_slot_id(_outer_slot)->clone_empty());
     }
     for (int result_idx = 0; result_idx < _fn_result_slots.size(); ++result_idx) {
         output_columns.emplace_back(_table_function_result.first[result_idx]->clone_empty());

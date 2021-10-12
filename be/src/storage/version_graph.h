@@ -76,7 +76,7 @@ public:
     TimestampedVersion(const Version& version, int64_t create_time)
             : _version(version.first, version.second), _create_time(create_time) {}
 
-    ~TimestampedVersion() {}
+    ~TimestampedVersion() = default;
 
     /// Return the rowset version of TimestampedVersion record.
     Version version() const { return _version; }
@@ -105,21 +105,21 @@ using TimestampedVersionSharedPtr = std::shared_ptr<TimestampedVersion>;
 class TimestampedVersionPathContainer {
 public:
     /// TimestampedVersionPathContainer construction function, max_create_time is assgined to 0.
-    TimestampedVersionPathContainer() : _max_create_time(0) {}
+    TimestampedVersionPathContainer() {}
 
     /// Return the max create time in a path version.
     int64_t max_create_time() { return _max_create_time; }
 
     /// Add a timestamped version to timestamped_versions_container. Once a timestamped version is added,
     /// the max_create_time will compare with the version timestamp and be refreshed.
-    void add_timestamped_version(TimestampedVersionSharedPtr version);
+    void add_timestamped_version(const TimestampedVersionSharedPtr& version);
 
     /// Return the timestamped_versions_container as const type.
     std::vector<TimestampedVersionSharedPtr>& timestamped_versions();
 
 private:
     std::vector<TimestampedVersionSharedPtr> _timestamped_versions_container;
-    int64_t _max_create_time;
+    int64_t _max_create_time{0};
 };
 
 using PathVersionListSharedPtr = std::shared_ptr<TimestampedVersionPathContainer>;

@@ -32,7 +32,7 @@ public:
 
     ObjectColumn(const ObjectColumn& column) { DCHECK(false) << "Can't copy construct object column"; }
 
-    ObjectColumn(ObjectColumn&& object_column) noexcept : _pool(std::move(object_column._pool)), _cache_ok(false) {}
+    ObjectColumn(ObjectColumn&& object_column) noexcept : _pool(std::move(object_column._pool)) {}
 
     void operator=(const ObjectColumn&) = delete;
 
@@ -126,9 +126,9 @@ public:
 
     int compare_at(size_t left, size_t right, const Column& rhs, int nan_direction_hint) const override;
 
-    void fvn_hash(uint32_t* seed, uint16_t from, uint16_t to) const override;
+    void fnv_hash(uint32_t* seed, uint32_t from, uint32_t to) const override;
 
-    void crc32_hash(uint32_t* hash, uint16_t from, uint16_t to) const override;
+    void crc32_hash(uint32_t* hash, uint32_t from, uint32_t to) const override;
 
     void put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx) const override;
 
@@ -179,7 +179,7 @@ public:
 
     const std::vector<T>& get_pool() const { return _pool; }
 
-    std::string debug_item(uint32_t idx) const;
+    std::string debug_item(uint32_t idx) const override;
 
     std::string debug_string() const override {
         std::stringstream ss;

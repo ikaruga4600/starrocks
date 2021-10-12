@@ -27,6 +27,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <utility>
 
 #include "runtime/bufferpool/buffer_pool.h"
 #include "runtime/bufferpool/buffer_pool_counters.h"
@@ -81,7 +82,7 @@ public:
 /// Wrapper around InternalList<Page> that tracks the # of bytes in the list.
 class BufferPool::PageList {
 public:
-    PageList() : bytes_(0) {}
+    PageList() {}
     ~PageList() {
         // Clients always empty out their list before destruction.
         DCHECK(list_.empty());
@@ -117,7 +118,7 @@ public:
         return page;
     }
 
-    void iterate(std::function<bool(Page*)> fn) { list_.iterate(fn); }
+    void iterate(std::function<bool(Page*)> fn) { list_.iterate(std::move(fn)); }
     bool contains(Page* page) { return list_.contains(page); }
     Page* tail() { return list_.tail(); }
     bool empty() const { return list_.empty(); }
@@ -131,15 +132,15 @@ public:
 
 private:
     InternalList<Page> list_;
-    int64_t bytes_;
+    int64_t bytes_{0};
 };
 
 /// The internal state for the client.
 class BufferPool::Client {
 public:
     Client(BufferPool* pool, //TmpFileMgr::FileGroup* file_group,
-           const std::string& name, ReservationTracker* parent_reservation, MemTracker* mem_tracker,
-           int64_t reservation_limit, RuntimeProfile* profile);
+           std::string name, ReservationTracker* parent_reservation, MemTracker* mem_tracker, int64_t reservation_limit,
+           RuntimeProfile* profile);
 
     ~Client() {
         DCHECK_EQ(0, num_pages_);
@@ -158,7 +159,7 @@ public:
     /// and the page's buffer will be returned.
     /// Neither the client's lock nor handle->page_->buffer_lock should be held by the
     /// caller.
-    void DestroyPageInternal(PageHandle* handle, BufferHandle* out_buffer = NULL);
+    void DestroyPageInternal(PageHandle* handle, BufferHandle* out_buffer = nullptr);
 
     /// Updates client state to reflect that 'page' is now a dirty unpinned page. May
     /// initiate writes for this or other dirty unpinned pages.

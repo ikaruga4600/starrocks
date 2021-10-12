@@ -73,7 +73,7 @@ public:
     TabletSharedPtr get_tablet(TTabletId tablet_id, SchemaHash schema_hash, bool include_deleted = false,
                                std::string* err = nullptr);
 
-    TabletSharedPtr get_tablet(TTabletId tablet_id, SchemaHash schema_hash, TabletUid tablet_uid,
+    TabletSharedPtr get_tablet(TTabletId tablet_id, SchemaHash schema_hash, const TabletUid& tablet_uid,
                                bool include_deleted = false, std::string* err = nullptr);
 
     // Extract tablet_id and schema_hash from given path.
@@ -170,7 +170,8 @@ private:
 
     std::shared_mutex& _get_tablets_shard_lock(TTabletId tabletId);
 
-    DISALLOW_COPY_AND_ASSIGN(TabletManager);
+    TabletManager(const TabletManager&) = delete;
+    const TabletManager& operator=(const TabletManager&) = delete;
 
     // TODO(lingbin): should be TabletInstances?
     // should be removed after schema_hash be removed

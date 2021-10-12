@@ -2,6 +2,8 @@
 
 #include "storage/vectorized/compaction.h"
 
+#include <utility>
+
 #include "gutil/strings/substitute.h"
 #include "runtime/current_thread.h"
 #include "storage/rowset/rowset_factory.h"
@@ -18,7 +20,7 @@ namespace starrocks::vectorized {
 Semaphore Compaction::_concurrency_sem;
 
 Compaction::Compaction(MemTracker* mem_tracker, TabletSharedPtr tablet)
-        : _tablet(tablet),
+        : _tablet(std::move(tablet)),
           _input_rowsets_size(0),
           _input_row_num(0),
           _state(CompactionState::INITED),
@@ -26,7 +28,7 @@ Compaction::Compaction(MemTracker* mem_tracker, TabletSharedPtr tablet)
     _mem_tracker = std::make_unique<MemTracker>(config::compaction_mem_limit, "", mem_tracker, true);
 }
 
-Compaction::~Compaction() {}
+Compaction::~Compaction() = default;
 
 Status Compaction::init(int concurreny) {
     _concurrency_sem.set_count(concurreny);
@@ -196,7 +198,7 @@ Status Compaction::merge_rowsets(MemTracker* mem_tracker, Statistics* stats_outp
 
         ChunkHelper::padding_char_columns(char_field_indexes, schema, _tablet->tablet_schema(), chunk.get());
 
-        OLAPStatus olap_status = _output_rs_writer->add_chunk(*chunk.get());
+        OLAPStatus olap_status = _output_rs_writer->add_chunk(*chunk);
         if (olap_status != OLAP_SUCCESS) {
             LOG(WARNING) << "writer add_chunk error, err=" << olap_status;
             return Status::InternalError("writer add_chunk error.");

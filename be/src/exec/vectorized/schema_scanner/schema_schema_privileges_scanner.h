@@ -12,14 +12,14 @@ namespace starrocks::vectorized {
 class SchemaSchemaPrivilegesScanner : public SchemaScanner {
 public:
     SchemaSchemaPrivilegesScanner();
-    virtual ~SchemaSchemaPrivilegesScanner();
+    ~SchemaSchemaPrivilegesScanner() override;
     Status start(RuntimeState* state) override;
     Status get_next(ChunkPtr* chunk, bool* eos) override;
 
 private:
     Status fill_chunk(ChunkPtr* chunk);
 
-    int _db_priv_index;
+    int _db_priv_index{0};
     TGetDBPrivsResult _db_privs_result;
     static SchemaScanner::ColumnDesc _s_db_privs_columns[];
 };

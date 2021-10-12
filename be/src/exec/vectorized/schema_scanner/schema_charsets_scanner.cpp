@@ -19,13 +19,13 @@ SchemaScanner::ColumnDesc SchemaCharsetsScanner::_s_css_columns[] = {
 
 SchemaCharsetsScanner::CharsetStruct SchemaCharsetsScanner::_s_charsets[] = {
         {"utf8", "utf8_general_ci", "UTF-8 Unicode", 3},
-        {nullptr, nullptr, 0},
+        {nullptr, nullptr, nullptr},
 };
 
 SchemaCharsetsScanner::SchemaCharsetsScanner()
-        : SchemaScanner(_s_css_columns, sizeof(_s_css_columns) / sizeof(SchemaScanner::ColumnDesc)), _index(0) {}
+        : SchemaScanner(_s_css_columns, sizeof(_s_css_columns) / sizeof(SchemaScanner::ColumnDesc)) {}
 
-SchemaCharsetsScanner::~SchemaCharsetsScanner() {}
+SchemaCharsetsScanner::~SchemaCharsetsScanner() = default;
 
 Status SchemaCharsetsScanner::fill_chunk(ChunkPtr* chunk) {
     // variables names

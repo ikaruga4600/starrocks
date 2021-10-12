@@ -30,6 +30,7 @@ set -eo pipefail
 
 ROOT=`dirname "$0"`
 ROOT=`cd "$ROOT"; pwd`
+MACHINE_TYPE=$(uname -m)
 
 export STARROCKS_HOME=${ROOT}
 
@@ -96,6 +97,10 @@ CLEAN=
 RUN_UT=
 WITH_GCOV=OFF
 WITH_HDFS=ON
+if [[ -z ${USE_AVX2} ]]; then
+    USE_AVX2=ON
+fi
+
 
 HELP=0
 if [ $# == 1 ] ; then
@@ -148,6 +153,7 @@ echo "Get params:
     RUN_UT              -- $RUN_UT
     WITH_GCOV           -- $WITH_GCOV
     WITH_HDFS           -- $WITH_HDFS
+    USE_AVX2            -- $USE_AVX2
 "
 
 # Clean and build generated code
@@ -162,7 +168,11 @@ make
 cd ${STARROCKS_HOME}
 
 if [ "${WITH_HDFS}" == "ON" ]; then
-   export LIBRARY_PATH=${JAVA_HOME}/jre/lib/amd64/server/
+    if [[ "${MACHINE_TYPE}" == "aarch64" ]]; then
+        export LIBRARY_PATH=${JAVA_HOME}/jre/lib/aarch64/server/
+    else
+        export LIBRARY_PATH=${JAVA_HOME}/jre/lib/amd64/server/
+    fi
 fi
 
 # Clean and build Backend
@@ -179,7 +189,8 @@ if [ ${BUILD_BE} -eq 1 ] ; then
     fi
     mkdir -p ${CMAKE_BUILD_DIR}
     cd ${CMAKE_BUILD_DIR}
-    ${CMAKE_CMD} .. -DSTARROCKS_THIRDPARTY=${STARROCKS_THIRDPARTY} -DSTARROCKS_HOME=${STARROCKS_HOME} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DMAKE_TEST=OFF -DWITH_HDFS=${WITH_HDFS} -DWITH_GCOV=${WITH_GCOV}
+    ${CMAKE_CMD} .. -DSTARROCKS_THIRDPARTY=${STARROCKS_THIRDPARTY} -DSTARROCKS_HOME=${STARROCKS_HOME} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+                    -DMAKE_TEST=OFF -DWITH_HDFS=${WITH_HDFS} -DWITH_GCOV=${WITH_GCOV} -DUSE_AVX2=$USE_AVX2
     time make -j${PARALLEL}
     make install
     cd ${STARROCKS_HOME}
@@ -254,12 +265,19 @@ if [ ${BUILD_BE} -eq 1 ]; then
     cp -r -p ${STARROCKS_HOME}/be/output/www/* ${STARROCKS_OUTPUT}/be/www/
     cp -r -p ${STARROCKS_HOME}/be/output/udf/*.a ${STARROCKS_OUTPUT}/udf/lib/
     cp -r -p ${STARROCKS_HOME}/be/output/udf/include/* ${STARROCKS_OUTPUT}/udf/include/
-    cp -r -p ${STARROCKS_THIRDPARTY}/installed/hadoop-3.3.0/share/hadoop/common ${STARROCKS_OUTPUT}/be/lib/hadoop/
-    cp -r -p ${STARROCKS_THIRDPARTY}/installed/hadoop-3.3.0/share/hadoop/hdfs ${STARROCKS_OUTPUT}/be/lib/hadoop/
-    cp -r -p ${STARROCKS_THIRDPARTY}/installed/hadoop-3.3.0/lib/native ${STARROCKS_OUTPUT}/be/lib/hadoop/
+    cp -r -p ${STARROCKS_THIRDPARTY}/installed/hadoop/share/hadoop/common ${STARROCKS_OUTPUT}/be/lib/hadoop/
+    cp -r -p ${STARROCKS_THIRDPARTY}/installed/hadoop/share/hadoop/hdfs ${STARROCKS_OUTPUT}/be/lib/hadoop/
+    cp -r -p ${STARROCKS_THIRDPARTY}/installed/hadoop/lib/native ${STARROCKS_OUTPUT}/be/lib/hadoop/
     # note: do not use oracle jdk to avoid commercial dispute
-    cp -r -p ${STARROCKS_THIRDPARTY}/installed/java-se-8u41-ri/jre/lib/amd64 ${STARROCKS_OUTPUT}/be/lib/jvm/
+    if [[ "${MACHINE_TYPE}" == "aarch64" ]]; then
+        cp -r -p ${STARROCKS_THIRDPARTY}/installed/open_jdk/jre/lib/aarch64 ${STARROCKS_OUTPUT}/be/lib/jvm/
+    else
+        cp -r -p ${STARROCKS_THIRDPARTY}/installed/open_jdk/jre/lib/amd64 ${STARROCKS_OUTPUT}/be/lib/jvm/
+    fi
 fi
+
+cp -r -p "${STARROCKS_HOME}/LICENSE.txt" "${STARROCKS_OUTPUT}/LICENSE.txt"
+build-support/gen_notice.py "${STARROCKS_HOME}/licenses,${STARROCKS_HOME}/licenses-binary" "${STARROCKS_OUTPUT}/NOTICE.txt" all
 
 echo "***************************************"
 echo "Successfully build StarRocks"

@@ -210,10 +210,9 @@ static Status get_float_value(const rapidjson::Value& col, PrimitiveType type, v
     return Status::OK();
 }
 
-ScrollParser::ScrollParser(bool doc_value_mode)
-        : _scroll_id(""), _size(0), _line_index(0), _doc_value_mode(doc_value_mode) {}
+ScrollParser::ScrollParser(bool doc_value_mode) : _size(0), _line_index(0), _doc_value_mode(doc_value_mode) {}
 
-ScrollParser::~ScrollParser() {}
+ScrollParser::~ScrollParser() = default;
 
 Status ScrollParser::parse(const std::string& scroll_result, bool exactly_once) {
     // rely on `_size !=0 ` to determine whether scroll ends
@@ -275,9 +274,7 @@ Status ScrollParser::fill_tuple(const TupleDescriptor* tuple_desc, Tuple* tuple,
     const rapidjson::Value& line = obj.HasMember(FIELD_SOURCE) ? obj[FIELD_SOURCE] : obj["fields"];
 
     tuple->init(tuple_desc->byte_size());
-    for (int i = 0; i < tuple_desc->slots().size(); ++i) {
-        const SlotDescriptor* slot_desc = tuple_desc->slots()[i];
-
+    for (auto slot_desc : tuple_desc->slots()) {
         if (!slot_desc->is_materialized()) {
             continue;
         }
@@ -307,10 +304,10 @@ Status ScrollParser::fill_tuple(const TupleDescriptor* tuple_desc, Tuple* tuple,
             std::string _id = obj[FIELD_ID].GetString();
             size_t len = _id.length();
             char* buffer = reinterpret_cast<char*>(tuple_pool->try_allocate_unaligned(len));
-            if (UNLIKELY(buffer == NULL)) {
+            if (UNLIKELY(buffer == nullptr)) {
                 std::string details =
                         strings::Substitute(ERROR_MEM_LIMIT_EXCEEDED, "MaterializeNextRow", len, "string slot");
-                return tuple_pool->mem_tracker()->MemLimitExceeded(NULL, details, len);
+                return tuple_pool->mem_tracker()->MemLimitExceeded(nullptr, details, len);
             }
             memcpy(buffer, _id.data(), len);
             reinterpret_cast<StringValue*>(slot)->ptr = buffer;
@@ -370,10 +367,10 @@ Status ScrollParser::fill_tuple(const TupleDescriptor* tuple_desc, Tuple* tuple,
             }
             size_t val_size = val.length();
             char* buffer = reinterpret_cast<char*>(tuple_pool->try_allocate_unaligned(val_size));
-            if (UNLIKELY(buffer == NULL)) {
+            if (UNLIKELY(buffer == nullptr)) {
                 std::string details =
                         strings::Substitute(ERROR_MEM_LIMIT_EXCEEDED, "MaterializeNextRow", val_size, "string slot");
-                return tuple_pool->mem_tracker()->MemLimitExceeded(NULL, details, val_size);
+                return tuple_pool->mem_tracker()->MemLimitExceeded(nullptr, details, val_size);
             }
             memcpy(buffer, val.data(), val_size);
             reinterpret_cast<StringValue*>(slot)->ptr = buffer;

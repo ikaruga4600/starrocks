@@ -22,6 +22,7 @@
 #ifndef STARROCKS_BE_SRC_QUERY_EXEC_DATA_SINK_H
 #define STARROCKS_BE_SRC_QUERY_EXEC_DATA_SINK_H
 
+#include <utility>
 #include <vector>
 
 #include "column/vectorized_fwd.h"
@@ -44,7 +45,7 @@ class RowDescriptor;
 // Superclass of all data sinks.
 class DataSink {
 public:
-    DataSink() : _closed(false) {}
+    DataSink() {}
     virtual ~DataSink() = default;
 
     virtual Status init(const TDataSink& thrift_sink);
@@ -81,12 +82,14 @@ public:
     // Returns the runtime profile for the sink.
     virtual RuntimeProfile* profile() = 0;
 
-    virtual void set_query_statistics(std::shared_ptr<QueryStatistics> statistics) { _query_statistics = statistics; }
+    virtual void set_query_statistics(std::shared_ptr<QueryStatistics> statistics) {
+        _query_statistics = std::move(statistics);
+    }
 
 protected:
     // Set to true after close() has been called. subclasses should check and set this in
     // close().
-    bool _closed;
+    bool _closed{false};
     std::unique_ptr<MemTracker> _expr_mem_tracker;
 
     // Maybe this will be transferred to BufferControlBlock.

@@ -10,8 +10,7 @@
 #include "exprs/vectorized/unary_function.h"
 #include "runtime/decimalv3.h"
 
-namespace starrocks {
-namespace vectorized {
+namespace starrocks::vectorized {
 
 #define DEFINE_CLASS_CONSTRUCTOR(CLASS_NAME)                                                          \
     CLASS_NAME(const TExprNode& node) : Expr(node) {}                                                 \
@@ -35,7 +34,7 @@ public:
             return VectorizedStrictBinaryFunction<ArithmeticOp>::template evaluate<Type>(l, r);
         }
     }
-    std::string debug_string() const {
+    std::string debug_string() const override {
         std::stringstream out;
         auto expr_debug_string = Expr::debug_string();
         out << "VectorizedArithmeticExpr ("
@@ -225,5 +224,4 @@ Expr* VectorizedArithmeticExprFactory::from_thrift(const starrocks::TExprNode& n
 #undef SWITCH_NUMBER_TYPE
 #undef SWITCH_ALL_TYPE
 
-} // namespace vectorized
-} // namespace starrocks
+} // namespace starrocks::vectorized

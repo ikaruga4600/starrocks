@@ -34,7 +34,7 @@ class DataConsumerGroup {
 public:
     typedef std::function<void(const Status&)> ConsumeFinishCallback;
 
-    DataConsumerGroup() : _grp_id(UniqueId::gen_uid()), _thread_pool(3, 10), _counter(0) {}
+    DataConsumerGroup() : _grp_id(UniqueId::gen_uid()), _thread_pool(3, 10) {}
 
     virtual ~DataConsumerGroup() { _consumers.clear(); }
 
@@ -42,7 +42,7 @@ public:
 
     const std::vector<std::shared_ptr<DataConsumer>>& consumers() { return _consumers; }
 
-    void add_consumer(std::shared_ptr<DataConsumer> consumer) {
+    void add_consumer(const std::shared_ptr<DataConsumer>& consumer) {
         consumer->set_grp(_grp_id);
         _consumers.push_back(consumer);
         ++_counter;
@@ -61,24 +61,24 @@ protected:
     // once a consumer is done, decrease the counter.
     // when the counter becomes zero, shutdown the queue to finish
     std::mutex _mutex;
-    int _counter;
+    int _counter{0};
 };
 
 // for kafka
 class KafkaDataConsumerGroup : public DataConsumerGroup {
 public:
-    KafkaDataConsumerGroup() : DataConsumerGroup(), _queue(500) {}
+    KafkaDataConsumerGroup() : _queue(500) {}
 
-    virtual ~KafkaDataConsumerGroup();
+    ~KafkaDataConsumerGroup() override;
 
-    virtual Status start_all(StreamLoadContext* ctx) override;
+    Status start_all(StreamLoadContext* ctx) override;
     // assign topic partitions to all consumers equally
     Status assign_topic_partitions(StreamLoadContext* ctx);
 
 private:
     // start a single consumer
-    void actual_consume(std::shared_ptr<DataConsumer> consumer, TimedBlockingQueue<RdKafka::Message*>* queue,
-                        int64_t max_running_time_ms, ConsumeFinishCallback cb);
+    void actual_consume(const std::shared_ptr<DataConsumer>& consumer, TimedBlockingQueue<RdKafka::Message*>* queue,
+                        int64_t max_running_time_ms, const ConsumeFinishCallback& cb);
 
 private:
     // blocking queue to receive msgs from all consumers

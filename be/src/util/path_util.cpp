@@ -36,8 +36,7 @@ using std::vector;
 using strings::SkipEmpty;
 using strings::Split;
 
-namespace starrocks {
-namespace path_util {
+namespace starrocks::path_util {
 
 const string kTmpInfix = ".starrockstmp";
 
@@ -53,6 +52,7 @@ std::string join_path_segments(const string& a, const string& b) {
 
 std::vector<string> join_path_segments_v(const std::vector<string>& v, const string& s) {
     std::vector<string> out;
+    out.reserve(v.size());
     for (const string& path : v) {
         out.emplace_back(join_path_segments(path, s));
     }
@@ -93,9 +93,8 @@ std::string file_extension(const string& path) {
         return "";
     }
 
-    string::size_type pos = file_name.rfind(".");
+    string::size_type pos = file_name.rfind('.');
     return pos == string::npos ? "" : file_name.substr(pos);
 }
 
-} // namespace path_util
-} // namespace starrocks
+} // namespace starrocks::path_util

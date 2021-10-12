@@ -2,11 +2,8 @@
 
 #include "pipeline_driver_poller.h"
 
-#include <emmintrin.h>
-
 #include <chrono>
-namespace starrocks {
-namespace pipeline {
+namespace starrocks::pipeline {
 
 void PipelineDriverPoller::start() {
     DCHECK(this->_polling_thread == nullptr);
@@ -64,6 +61,7 @@ void PipelineDriverPoller::run_internal() {
                 // there are not any drivers belonging to a query context can make progress for a expiration period
                 // indicates that some fragments are missing because of failed exec_plan_fragment invocation. in
                 // this situation, query is failed finally, so drivers are marked PENDING_FINISH/FINISH.
+                driver->cancel(driver->fragment_ctx()->runtime_state());
                 if (driver->source_operator()->pending_finish()) {
                     driver->set_driver_state(DriverState::PENDING_FINISH);
                     ++driver_it;
@@ -91,20 +89,24 @@ void PipelineDriverPoller::run_internal() {
             spin_count = 0;
         }
         if (spin_count != 0 && spin_count % 64 == 0) {
+#ifdef __x86_64__
             _mm_pause();
+#else
+            // TODO: Maybe there's a better intrinsic like _mm_pause on non-x86_64 architecture.
+            sched_yield();
+#endif
         }
-        if (spin_count != 0 && spin_count == 640) {
+        if (spin_count == 640) {
             spin_count = 0;
             sched_yield();
         }
     }
 }
 
-void PipelineDriverPoller::add_blocked_driver(DriverPtr driver) {
+void PipelineDriverPoller::add_blocked_driver(const DriverPtr& driver) {
     std::unique_lock<std::mutex> lock(this->_mutex);
     this->_blocked_drivers.push_back(driver);
     this->_cond.notify_one();
 }
 
-} // namespace pipeline
-} // namespace starrocks
+} // namespace starrocks::pipeline

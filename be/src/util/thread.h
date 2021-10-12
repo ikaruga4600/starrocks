@@ -148,8 +148,8 @@ private:
             : _thread(0),
               _tid(INVALID_TID),
               _functor(std::move(functor)),
-              _category(std::move(category)),
-              _name(std::move(name)),
+              _category(category),
+              _name(name),
               _done(1),
               _joinable(false) {}
 
@@ -272,7 +272,8 @@ private:
     int _warn_every_ms;
     int _give_up_after_ms;
 
-    DISALLOW_COPY_AND_ASSIGN(ThreadJoiner);
+    ThreadJoiner(const ThreadJoiner&) = delete;
+    const ThreadJoiner& operator=(const ThreadJoiner&) = delete;
 };
 
 } //namespace starrocks

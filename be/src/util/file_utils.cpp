@@ -50,8 +50,8 @@ Status FileUtils::create_dir(const std::string& path, Env* env) {
     std::filesystem::path p(path);
 
     std::string partial_path;
-    for (std::filesystem::path::iterator it = p.begin(); it != p.end(); ++it) {
-        partial_path = partial_path + it->string() + "/";
+    for (const auto& it : p) {
+        partial_path = partial_path + it.string() + "/";
         bool is_dir = false;
 
         Status s = env->is_directory(partial_path, &is_dir);
@@ -262,7 +262,7 @@ Status FileUtils::md5sum(const std::string& file, std::string* md5sum) {
         return Status::InternalError("failed to stat file");
     }
     size_t file_len = statbuf.st_size;
-    void* buf = mmap(0, file_len, PROT_READ, MAP_SHARED, fd, 0);
+    void* buf = mmap(nullptr, file_len, PROT_READ, MAP_SHARED, fd, 0);
     if (buf == MAP_FAILED) {
         PLOG(WARNING) << "mmap failed";
         return Status::InternalError("mmap failed");
@@ -276,8 +276,8 @@ Status FileUtils::md5sum(const std::string& file, std::string* md5sum) {
     }
 
     std::stringstream ss;
-    for (int32_t i = 0; i < MD5_DIGEST_LENGTH; i++) {
-        ss << std::setfill('0') << std::setw(2) << std::hex << (int)result[i];
+    for (unsigned char i : result) {
+        ss << std::setfill('0') << std::setw(2) << std::hex << (int)i;
     }
     ss >> *md5sum;
 

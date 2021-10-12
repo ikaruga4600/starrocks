@@ -10,17 +10,17 @@ namespace starrocks::vectorized {
 class SchemaTablesScanner : public SchemaScanner {
 public:
     SchemaTablesScanner();
-    virtual ~SchemaTablesScanner();
+    ~SchemaTablesScanner() override;
 
-    virtual Status start(RuntimeState* state);
-    virtual Status get_next(ChunkPtr* chunk, bool* eos);
+    Status start(RuntimeState* state) override;
+    Status get_next(ChunkPtr* chunk, bool* eos) override;
 
 private:
     Status get_new_table();
     Status fill_chunk(ChunkPtr* chunk);
 
-    int _db_index;
-    int _table_index;
+    int _db_index{0};
+    int _table_index{0};
     TGetDbsResult _db_result;
     TListTableStatusResult _table_result;
     static SchemaScanner::ColumnDesc _s_tbls_columns[];

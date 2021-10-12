@@ -16,7 +16,7 @@ using Pipelines = std::vector<PipelinePtr>;
 class Pipeline {
 public:
     Pipeline() = delete;
-    Pipeline(uint32_t id, const OpFactories& op_factories) : _id(id), _op_factories(std::move(op_factories)) {}
+    Pipeline(uint32_t id, const OpFactories& op_factories) : _id(id), _op_factories(op_factories) {}
 
     uint32_t get_id() const { return _id; }
 
@@ -35,6 +35,19 @@ public:
     SourceOperatorFactory* source_operator_factory() {
         DCHECK(!_op_factories.empty());
         return down_cast<SourceOperatorFactory*>(_op_factories[0].get());
+    }
+
+    Status prepare(RuntimeState* state, MemTracker* mem_tracker) {
+        for (auto& op : _op_factories) {
+            RETURN_IF_ERROR(op->prepare(state, mem_tracker));
+        }
+        return Status::OK();
+    }
+
+    void close(RuntimeState* state) {
+        for (auto& op : _op_factories) {
+            op->close(state);
+        }
     }
 
 private:

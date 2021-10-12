@@ -140,7 +140,7 @@ private:
 class TableDescriptor {
 public:
     TableDescriptor(const TTableDescriptor& tdesc);
-    virtual ~TableDescriptor() {}
+    virtual ~TableDescriptor() = default;
     int num_cols() const { return _num_cols; }
     int num_clustering_cols() const { return _num_clustering_cols; }
     TableId table_id() const { return _id; }
@@ -214,14 +214,14 @@ private:
 class OlapTableDescriptor : public TableDescriptor {
 public:
     OlapTableDescriptor(const TTableDescriptor& tdesc);
-    virtual std::string debug_string() const;
+    std::string debug_string() const override;
 };
 
 class SchemaTableDescriptor : public TableDescriptor {
 public:
     SchemaTableDescriptor(const TTableDescriptor& tdesc);
-    virtual ~SchemaTableDescriptor();
-    virtual std::string debug_string() const;
+    ~SchemaTableDescriptor() override;
+    std::string debug_string() const override;
     TSchemaTableType::type schema_table_type() const { return _schema_table_type; }
 
 private:
@@ -231,8 +231,8 @@ private:
 class BrokerTableDescriptor : public TableDescriptor {
 public:
     BrokerTableDescriptor(const TTableDescriptor& tdesc);
-    virtual ~BrokerTableDescriptor();
-    virtual std::string debug_string() const;
+    ~BrokerTableDescriptor() override;
+    std::string debug_string() const override;
 
 private:
 };
@@ -240,8 +240,8 @@ private:
 class EsTableDescriptor : public TableDescriptor {
 public:
     EsTableDescriptor(const TTableDescriptor& tdesc);
-    virtual ~EsTableDescriptor();
-    virtual std::string debug_string() const;
+    ~EsTableDescriptor() override;
+    std::string debug_string() const override;
 
 private:
 };
@@ -249,7 +249,7 @@ private:
 class MySQLTableDescriptor : public TableDescriptor {
 public:
     MySQLTableDescriptor(const TTableDescriptor& tdesc);
-    virtual std::string debug_string() const;
+    std::string debug_string() const override;
     const std::string mysql_db() const { return _mysql_db; }
     const std::string mysql_table() const { return _mysql_table; }
     const std::string host() const { return _host; }
@@ -339,7 +339,7 @@ private:
     TupleDescriptorMap _tuple_desc_map;
     SlotDescriptorMap _slot_desc_map;
 
-    DescriptorTbl() : _tbl_desc_map(), _tuple_desc_map(), _slot_desc_map() {}
+    DescriptorTbl() {}
 };
 
 // Records positions of tuples within row produced by ExecNode.
@@ -371,7 +371,7 @@ public:
     RowDescriptor(TupleDescriptor* tuple_desc, bool is_nullable);
 
     // dummy descriptor, needed for the JNI EvalPredicate() function
-    RowDescriptor() {}
+    RowDescriptor() = default;
 
     // Returns total size in bytes.
     // TODO: also take avg string lengths into account, ie, change this

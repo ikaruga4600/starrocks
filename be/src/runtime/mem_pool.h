@@ -180,9 +180,9 @@ private:
     struct ChunkInfo {
         Chunk chunk;
         /// bytes allocated via Allocate() in this chunk
-        int64_t allocated_bytes;
+        int64_t allocated_bytes{0};
         explicit ChunkInfo(const Chunk& chunk);
-        ChunkInfo() : allocated_bytes(0) {}
+        ChunkInfo() {}
     };
 
     /// A static field used as non-NULL pointer for zero length allocations. NULL is
@@ -235,7 +235,7 @@ private:
         // guarantee alignment.
         //static_assert(
         //INITIAL_CHUNK_SIZE >= config::FLAGS_MEMORY_MAX_ALIGNMENT, "Min chunk size too low");
-        if (UNLIKELY(!find_chunk(size, CHECK_LIMIT_FIRST))) return NULL;
+        if (UNLIKELY(!find_chunk(size, CHECK_LIMIT_FIRST))) return nullptr;
 
         ChunkInfo& info = chunks_[current_chunk_idx_];
         uint8_t* result = info.chunk.data + info.allocated_bytes;

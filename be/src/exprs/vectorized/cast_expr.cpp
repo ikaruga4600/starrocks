@@ -16,8 +16,7 @@
 #include "runtime/runtime_state.h"
 #include "util/date_func.h"
 
-namespace starrocks {
-namespace vectorized {
+namespace starrocks::vectorized {
 
 template <PrimitiveType FromType, PrimitiveType ToType>
 ColumnPtr cast_fn(ColumnPtr& column);
@@ -655,7 +654,7 @@ public:
             return cast_fn<FromType, ToType>(column);
         }
     };
-    std::string debug_string() const {
+    std::string debug_string() const override {
         std::stringstream out;
         auto expr_debug_string = Expr::debug_string();
         out << "VectorizedCastExpr ("
@@ -1105,5 +1104,4 @@ Expr* VectorizedCastExprFactory::from_type(const TypeDescriptor& from, const Typ
     return expr;
 }
 
-} // namespace vectorized
-} // namespace starrocks
+} // namespace starrocks::vectorized

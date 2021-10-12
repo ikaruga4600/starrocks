@@ -2,11 +2,17 @@
 
 #pragma once
 
+#if defined(__x86_64__)
 #include <nmmintrin.h>
+#endif
 
 #include "util/hash_util.hpp"
 #include "util/slice.h"
 #include "util/unaligned_access.h"
+
+#if defined(__aarch64__)
+#include "arm_acle.h"
+#endif
 
 namespace starrocks::vectorized {
 
@@ -101,12 +107,24 @@ static uint32_t crc_hash_32(const void* data, int32_t bytes, uint32_t hash) {
     auto* p = reinterpret_cast<const uint8_t*>(data);
 
     while (words--) {
+#if defined(__x86_64__)
         hash = _mm_crc32_u32(hash, unaligned_load<uint32_t>(p));
+#elif defined(__aarch64__)
+        hash = __crc32cw(hash, unaligned_load<uint32_t>(p));
+#else
+#error "Not supported architecture"
+#endif
         p += sizeof(uint32_t);
     }
 
     while (bytes--) {
+#if defined(__x86_64__)
         hash = _mm_crc32_u8(hash, *p);
+#elif defined(__aarch64__)
+        hash = __crc32cb(hash, unaligned_load<uint32_t>(p));
+#else
+#error "Not supported architecture"
+#endif
         ++p;
     }
 
@@ -125,12 +143,25 @@ static uint64_t crc_hash_64(const void* data, int32_t length, uint64_t hash) {
     auto* p = reinterpret_cast<const uint8_t*>(data);
     auto* end = reinterpret_cast<const uint8_t*>(data) + length;
     while (words--) {
+#if defined(__x86_64__)
         hash = _mm_crc32_u64(hash, unaligned_load<uint64_t>(p));
+#elif defined(__aarch64__)
+        hash = __crc32cd(hash, unaligned_load<uint32_t>(p));
+#else
+#error "Not supported architecture"
+#endif
         p += sizeof(uint64_t);
     }
     // Reduce the branch condition
     p = end - 8;
+#if defined(__x86_64__)
     hash = _mm_crc32_u64(hash, unaligned_load<uint64_t>(p));
+#elif defined(__aarch64__)
+    hash = __crc32cd(hash, unaligned_load<uint32_t>(p));
+#else
+#error "Not supported architecture"
+#endif
+    p += sizeof(uint64_t);
     return hash;
 }
 
@@ -222,12 +253,25 @@ public:
 };
 
 inline uint64_t crc_hash_uint64(uint64_t value, uint64_t seed) {
+#if defined(__x86_64__)
     return _mm_crc32_u64(seed, value);
+#elif defined(__aarch64__)
+    return __crc32cd(seed, value);
+#else
+#error "Not supported architecture"
+#endif
 }
 
 inline uint64_t crc_hash_uint128(uint64_t value0, uint64_t value1, uint64_t seed) {
+#if defined(__x86_64__)
     uint64_t hash = _mm_crc32_u64(seed, value0);
     hash = _mm_crc32_u64(hash, value1);
+#elif defined(__aarch64__)
+    uint64_t hash = __crc32cd(seed, value0);
+    hash = __crc32cd(hash, value1);
+#else
+#error "Not supported architecture"
+#endif
     return hash;
 }
 

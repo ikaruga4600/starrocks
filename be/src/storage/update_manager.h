@@ -49,7 +49,7 @@ public:
 
     Status get_latest_del_vec(KVStore* meta, const TabletSegmentId& tsid, DelVectorPtr* pdelvec);
 
-    Status set_cached_del_vec(const TabletSegmentId& tsid, DelVectorPtr delvec);
+    Status set_cached_del_vec(const TabletSegmentId& tsid, const DelVectorPtr& delvec);
 
     Status on_rowset_finished(Tablet* tablet, Rowset* rowset);
 
@@ -94,7 +94,8 @@ private:
 
     std::unique_ptr<ThreadPool> _apply_thread_pool;
 
-    DISALLOW_COPY_AND_ASSIGN(UpdateManager);
+    UpdateManager(const UpdateManager&) = delete;
+    const UpdateManager& operator=(const UpdateManager&) = delete;
 };
 
 } // namespace starrocks

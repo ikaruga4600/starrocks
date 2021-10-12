@@ -213,8 +213,8 @@ public class PlanFragmentTest extends PlanTestBase {
         Config.enable_decimal_v3 = true;
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("  1:Project\n" +
-                "  |  <slot 4> : CAST(1: v1 AS DECIMAL(18,2)) + CAST(2: v2 AS DECIMAL(18,3))\n" +
-                "  |  use vectorized: true"));
+                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL64(7,2)) AS DECIMAL64(18,2)) + CAST(CAST(2: v2 AS DECIMAL64(9,3)) AS DECIMAL64(18,3))\n" +
+                "  |  use vectorized: true\n"));
         Config.enable_decimal_v3 = false;
     }
 
@@ -224,7 +224,7 @@ public class PlanFragmentTest extends PlanTestBase {
         Config.enable_decimal_v3 = true;
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("  1:Project\n" +
-                "  |  <slot 4> : CAST(1: v1 AS DECIMAL(38,2)) - CAST(2: v2 AS DECIMAL(38,3))\n" +
+                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL128(27,2)) AS DECIMAL128(38,2)) - CAST(CAST(2: v2 AS DECIMAL64(10,3)) AS DECIMAL128(38,3))\n" +
                 "  |  use vectorized: true"));
         Config.enable_decimal_v3 = false;
     }
@@ -235,7 +235,7 @@ public class PlanFragmentTest extends PlanTestBase {
         Config.enable_decimal_v3 = true;
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("  1:Project\n" +
-                "  |  <slot 4> : CAST(1: v1 AS DECIMAL(38,5)) * CAST(2: v2 AS DECIMAL(38,7))\n" +
+                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL128(10,5)) AS DECIMAL128(38,5)) * CAST(CAST(2: v2 AS DECIMAL64(9,7)) AS DECIMAL128(38,7))\n" +
                 "  |  use vectorized: true"));
         Config.enable_decimal_v3 = false;
     }
@@ -246,9 +246,7 @@ public class PlanFragmentTest extends PlanTestBase {
         Config.enable_decimal_v3 = true;
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("  1:Project\n" +
-                "  |  <slot 4> : CAST(1: v1 AS DECIMAL(38,5)) / CAST(CAST(2: v2 AS DECIMAL(9,7)) AS DECIMAL"
-                + "(38,7))\n"
-                +
+                "  |  <slot 4> : CAST(CAST(1: v1 AS DECIMAL128(18,5)) AS DECIMAL128(38,5)) / CAST(CAST(2: v2 AS DECIMAL32(9,7)) AS DECIMAL128(38,7))\n" +
                 "  |  use vectorized: true"));
         Config.enable_decimal_v3 = false;
     }
@@ -259,9 +257,7 @@ public class PlanFragmentTest extends PlanTestBase {
         Config.enable_decimal_v3 = true;
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("  1:Project\n" +
-                "  |  <slot 4> : CAST(1: v1 AS DECIMAL(18,5)) % CAST(CAST(2: v2 AS DECIMAL(9,7)) AS DECIMAL"
-                + "(18,7))\n"
-                +
+                "  |  <slot 4> : CAST(1: v1 AS DECIMAL64(18,5)) % CAST(CAST(2: v2 AS DECIMAL32(9,7)) AS DECIMAL64(18,7))\n" +
                 "  |  use vectorized: true"));
         Config.enable_decimal_v3 = false;
     }
@@ -1078,7 +1074,7 @@ public class PlanFragmentTest extends PlanTestBase {
                 " arg_types:[TTypeDesc(types:[TTypeNode(type:SCALAR, scalar_type:TScalarType(type:DECIMAL64," +
                 " precision:10, scale:2))])], ret_type:TTypeDesc(types:[TTypeNode(type:SCALAR, " +
                 "scalar_type:TScalarType(type:DECIMAL64, precision:10, scale:2))]), has_var_args:false, " +
-                "signature:lag(DECIMAL(10,2))";
+                "signature:lag(DECIMAL64(10,2))";
         Assert.assertTrue(plan.contains(expectSlice));
 
         sql = "select lag(null, 1,1) OVER () from t0";
@@ -1734,13 +1730,11 @@ public class PlanFragmentTest extends PlanTestBase {
     public void testInformationSchema() throws Exception {
         String sql = "select column_name from information_schema.columns limit 1;";
         String plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan.contains("  STREAM DATA SINK\n"
-                + "    EXCHANGE ID: 01\n"
-                + "    UNPARTITIONED\n"
-                + "\n"
-                + "  0:SCAN SCHEMA\n"
-                + "     limit: 1\n"
-                + "     use vectorized: true"));
+        Assert.assertTrue(plan.contains("  RESULT SINK\n" +
+                "\n" +
+                "  0:SCAN SCHEMA\n" +
+                "     limit: 1\n" +
+                "     use vectorized: true"));
     }
 
     @Test
@@ -2901,7 +2895,7 @@ public class PlanFragmentTest extends PlanTestBase {
     }
 
     @Test
-    public void testPerAggregateForCrossJoin() throws Exception {
+    public void testPreAggregateForCrossJoin() throws Exception {
         String sql = "select join1.id from join1, join2 group by join1.id";
         String plan = getFragmentPlan(sql);
 
@@ -2920,7 +2914,93 @@ public class PlanFragmentTest extends PlanTestBase {
                 "     PREAGGREGATION: ON"));
         Assert.assertTrue(plan.contains("  1:OlapScanNode\n" +
                 "     TABLE: baseall\n" +
-                "     PREAGGREGATION: OFF. Reason: Has Join"));
+                "     PREAGGREGATION: OFF. Reason: Has can not pre-aggregation Join"));
+    }
+
+    @Test
+    public void testPreAggregationWithJoin() throws Exception {
+        // check left agg table with pre-aggregation
+        String sql = "select k2, sum(k9) from baseall join join2 on k1 = id group by k2";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: ON"));
+
+        // check right agg table with pre-agg
+        sql = "select k2, sum(k9) from join2 join [broadcast] baseall on k1 = id group by k2";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("1:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: ON"));
+
+        // check two agg tables only one agg table can pre-aggregation
+        sql = "select t1.k2, sum(t1.k9) from baseall t1 join baseall t2 on t1.k1 = t2.k1 group by t1.k2";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: ON"));
+        Assert.assertTrue(plan.contains("1:OlapScanNode\n" +
+                "  |       TABLE: baseall\n" +
+                "  |       PREAGGREGATION: OFF. Reason: Has can not pre-aggregation Join"));
+
+        sql = "select t2.k2, sum(t2.k9) from baseall t1 join [broadcast] baseall t2 on t1.k1 = t2.k1 group by t2.k2";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: OFF. Reason: Has can not pre-aggregation Join"));
+        Assert.assertTrue(plan.contains("1:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: ON"));
+
+        // check multi tables only one agg table can pre-aggregation
+        sql =
+                "select t1.k2, sum(t1.k9) from baseall t1 join join2 t2 on t1.k1 = t2.id join baseall t3 on t1.k1 = t3.k1 group by t1.k2";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("5:OlapScanNode\n" +
+                "  |       TABLE: baseall\n" +
+                "  |       PREAGGREGATION: OFF. Reason: Has can not pre-aggregation Join"));
+        Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: ON"));
+
+        sql =
+                "select t3.k2, sum(t3.k9) from baseall t1 join [broadcast] join2 t2 on t1.k1 = t2.id join [broadcast] baseall t3 on t1.k1 = t3.k1 group by t3.k2";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: OFF. Reason: Has can not pre-aggregation Join"));
+        Assert.assertTrue(plan.contains("5:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: ON"));
+
+        // check join predicate with non key columns
+        sql = "select t1.k2, sum(t1.k9) from baseall t1 join baseall t2 on t1.k9 = t2.k9 group by t1.k2";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: OFF. Reason: Predicates include the value column"));
+
+        sql =
+                "select t1.k2, sum(t1.k9) from baseall t1 join baseall t2 on t1.k1 = t2.k1 where t1.k9 + t2.k9 = 1 group by t1.k2";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: OFF. Reason: Predicates include the value column"));
+
+        // check group by two tables columns
+        sql = "select t1.k2, t2.k2, sum(t1.k9) from baseall t1 join baseall t2 on t1.k1 = t2.k1 group by t1.k2, t2.k2";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: ON"));
+
+        // check aggregate two table columns
+        sql =
+                "select t1.k2, t2.k2, sum(t1.k9), sum(t2.k9) from baseall t1 join baseall t2 on t1.k1 = t2.k1 group by t1.k2, t2.k2";
+        plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
+                "     TABLE: baseall\n" +
+                "     PREAGGREGATION: OFF. Reason: Has can not pre-aggregation Join"));
     }
 
     @Test
@@ -3030,8 +3110,8 @@ public class PlanFragmentTest extends PlanTestBase {
         // test having aggregate column
         sql = "select count(*) as count from join1 left join join2 on join1.id = join2.id\n" +
                 "having count > 1;";
-        starRocksAssert.query(sql).explainContains("6:AGGREGATE (update finalize)\n" +
-                        "  |  output: count(*)\n" +
+        starRocksAssert.query(sql).explainContains("7:AGGREGATE (merge finalize)\n" +
+                        "  |  output: count(7: count())\n" +
                         "  |  group by: \n" +
                         "  |  having: 7: count() > 1",
                 "  3:HASH JOIN\n" +
@@ -3665,7 +3745,7 @@ public class PlanFragmentTest extends PlanTestBase {
         String sql = "select avg(t1c), count(distinct id_decimal) from test_all_type;";
         String plan = getVerboseExplain(sql);
         Assert.assertTrue(plan.contains(
-                "multi_distinct_count[([10: id_decimal, DECIMAL(10,2), true]); args: DECIMAL64; result: BIGINT; args nullable: true; result nullable: false]"));
+                "multi_distinct_count[([10: id_decimal, DECIMAL64(10,2), true]); args: DECIMAL64; result: BIGINT; args nullable: true; result nullable: false]"));
     }
 
     @Test
@@ -3920,6 +4000,18 @@ public class PlanFragmentTest extends PlanTestBase {
     }
 
     @Test
+    public void testReplicationJoinWithPartitionTable() throws Exception {
+        connectContext.getSessionVariable().setEnableReplicationJoin(true);
+        boolean oldValue = FeConstants.runningUnitTest;
+        FeConstants.runningUnitTest = true;
+        String sql = "select * from join1 join pushdown_test on join1.id = pushdown_test.k1;";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("INNER JOIN (BROADCAST)"));
+        FeConstants.runningUnitTest = oldValue;
+        connectContext.getSessionVariable().setEnableReplicationJoin(false);
+    }
+
+    @Test
     public void testOuterJoinBucketShuffle() throws Exception {
         String sql = "SELECT DISTINCT t0.v1 FROM t0 RIGHT JOIN[BUCKET] t1 ON t0.v1 = t1.v4";
         String plan = getFragmentPlan(sql);
@@ -3979,5 +4071,45 @@ public class PlanFragmentTest extends PlanTestBase {
                 "  |  \n" +
                 "  3:HASH JOIN\n" +
                 "  |  join op: LEFT OUTER JOIN (BROADCAST)"));
+    }
+
+    @Test
+    public void testSchemaScan() throws Exception {
+        String sql = "select * from information_schema.columns";
+        String planFragment = getFragmentPlan(sql);
+        Assert.assertTrue(planFragment.contains("PARTITION: UNPARTITIONED\n" +
+                "\n" +
+                "  RESULT SINK\n" +
+                "\n" +
+                "  0:SCAN SCHEMA\n" +
+                "     use vectorized: true"));
+    }
+
+    @Test
+    public void testDuplicateAggregateFn() throws Exception {
+        String sql = "select bitmap_union_count(b1) from test_object having count(distinct b1) > 2;";
+        String planFragment = getFragmentPlan(sql);
+        Assert.assertTrue(planFragment.contains(" OUTPUT EXPRS:13: bitmap_union_count(5: b1)\n" +
+                "  PARTITION: RANDOM\n" +
+                "\n" +
+                "  RESULT SINK\n" +
+                "\n" +
+                "  1:AGGREGATE (update finalize)\n" +
+                "  |  output: bitmap_union_count(5: b1)\n" +
+                "  |  group by: \n" +
+                "  |  having: 13: bitmap_union_count(5: b1) > 2"));
+    }
+
+    @Test
+    public void testDuplicateAggregateFn2() throws Exception {
+        String sql = "select bitmap_union_count(b1), count(distinct b1) from test_object;";
+        String planFragment = getFragmentPlan(sql);
+        Assert.assertTrue(planFragment.contains("  2:Project\n" +
+                "  |  <slot 13> : 13: bitmap_union_count(5: b1)\n" +
+                "  |  <slot 14> : 13: bitmap_union_count(5: b1)\n" +
+                "  |  use vectorized: true\n" +
+                "  |  \n" +
+                "  1:AGGREGATE (update finalize)\n" +
+                "  |  output: bitmap_union_count(5: b1)"));
     }
 }

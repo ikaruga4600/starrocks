@@ -36,14 +36,14 @@ public:
 
 public:
     EngineStorageMigrationTask(TTabletId tablet_id, TSchemaHash schema_hash, DataDir* dest_store);
-    ~EngineStorageMigrationTask() override {}
+    ~EngineStorageMigrationTask() override = default;
 
 private:
     OLAPStatus _storage_migrate(TabletSharedPtr tablet);
 
     void _generate_new_header(DataDir* store, const uint64_t new_shard, const TabletSharedPtr& tablet,
                               const std::vector<RowsetSharedPtr>& consistent_rowsets,
-                              TabletMetaSharedPtr new_tablet_meta);
+                              const TabletMetaSharedPtr& new_tablet_meta);
 
     // TODO: hkp
     // rewrite this function

@@ -95,7 +95,7 @@ Status Reader::_init_collector(const ReaderParams& params) {
         std::vector<ChunkIteratorPtr> children;
         children.reserve(seg_iters.size());
         for (auto& seg_iter : seg_iters) {
-            children.emplace_back(timed_chunk_iterator(std::move(seg_iter), scan_timer));
+            children.emplace_back(timed_chunk_iterator(seg_iter, scan_timer));
         }
         seg_iters.swap(children);
     }
@@ -117,7 +117,7 @@ Status Reader::_init_collector(const ReaderParams& params) {
         //       |           |           |
         // SegmentIterator  ...    SegmentIterator
         //
-        _collect_iter = new_merge_iterator(std::move(seg_iters));
+        _collect_iter = new_merge_iterator(seg_iters);
     } else if (keys_type == PRIMARY_KEYS || keys_type == DUP_KEYS || (keys_type == UNIQUE_KEYS && skip_aggr) ||
                (select_all_keys && seg_iters.size() == 1)) {
         //             UnionIterator
@@ -150,9 +150,9 @@ Status Reader::_init_collector(const ReaderParams& params) {
             RuntimeProfile::Counter* aggr_timer = ADD_TIMER(p, "aggr");
 
             _collect_iter = new_merge_iterator(seg_iters);
-            _collect_iter = timed_chunk_iterator(std::move(_collect_iter), sort_timer);
+            _collect_iter = timed_chunk_iterator(_collect_iter, sort_timer);
             _collect_iter = new_aggregate_iterator(std::move(_collect_iter), 0);
-            _collect_iter = timed_chunk_iterator(std::move(_collect_iter), aggr_timer);
+            _collect_iter = timed_chunk_iterator(_collect_iter, aggr_timer);
         } else {
             _collect_iter = new_merge_iterator(seg_iters);
             _collect_iter = new_aggregate_iterator(std::move(_collect_iter), 0);
@@ -180,9 +180,9 @@ Status Reader::_init_collector(const ReaderParams& params) {
             RuntimeProfile::Counter* aggr_timer = ADD_TIMER(p, "aggr");
 
             _collect_iter = new_union_iterator(std::move(seg_iters));
-            _collect_iter = timed_chunk_iterator(std::move(_collect_iter), union_timer);
+            _collect_iter = timed_chunk_iterator(_collect_iter, union_timer);
             _collect_iter = new_aggregate_iterator(std::move(_collect_iter), f);
-            _collect_iter = timed_chunk_iterator(std::move(_collect_iter), aggr_timer);
+            _collect_iter = timed_chunk_iterator(_collect_iter, aggr_timer);
         } else {
             _collect_iter = new_union_iterator(std::move(seg_iters));
             _collect_iter = new_aggregate_iterator(std::move(_collect_iter), f);
@@ -203,8 +203,6 @@ Status Reader::_init_predicates(const ReaderParams& params) {
 Status Reader::_init_delete_predicates(const ReaderParams& params, DeletePredicates* dels) {
     PredicateParser pred_parser(_tablet->tablet_schema());
 
-    Status st;
-
     _tablet->obtain_header_rdlock();
 
     for (const DeletePredicatePB& pred_pb : _tablet->delete_predicates()) {
@@ -217,8 +215,8 @@ Status Reader::_init_delete_predicates(const ReaderParams& params, DeletePredica
             TCondition cond;
             if (!DeleteHandler::parse_condition(pred_pb.sub_predicates(i), &cond)) {
                 LOG(WARNING) << "invalid delete condition: " << pred_pb.sub_predicates(i) << "]";
-                st = Status::InternalError("invalid delete condition string");
-                break;
+                _tablet->release_header_lock();
+                return Status::InternalError("invalid delete condition string");
             }
             size_t idx = _tablet->tablet_schema().field_index(cond.column_name);
             if (idx >= _tablet->num_key_columns() && _tablet->keys_type() != DUP_KEYS) {
@@ -265,7 +263,7 @@ Status Reader::_init_delete_predicates(const ReaderParams& params, DeletePredica
     }
 
     _tablet->release_header_lock();
-    return st;
+    return Status::OK();
 }
 
 // convert an OlapTuple to SeekTuple.

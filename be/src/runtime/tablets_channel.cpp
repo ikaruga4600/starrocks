@@ -60,8 +60,6 @@ Status TabletsChannel::open(const PTabletWriterOpenRequest& params) {
         // Normal case, already open by other sender
         return Status::OK();
     }
-    LOG(INFO) << "Opening tablets channel=" << _key << " tablets num=" << params.tablets().size()
-              << " timeout=" << params.load_channel_timeout_s() << " vectorized=" << params.is_vectorized();
     _txn_id = params.txn_id();
     _index_id = params.index_id();
     _schema = new OlapTableSchemaParam();
@@ -220,8 +218,7 @@ Status TabletsChannel::_build_chunk_meta(const ChunkPB& pb_chunk) {
 
     size_t column_index = 0;
     _chunk_meta.types.resize(pb_chunk.is_nulls().size());
-    for (size_t i = 0; i < _row_desc->tuple_descriptors().size(); i++) {
-        TupleDescriptor* tuple_desc = _row_desc->tuple_descriptors()[i];
+    for (auto tuple_desc : _row_desc->tuple_descriptors()) {
         const std::vector<SlotDescriptor*>& slots = tuple_desc->slots();
         for (const auto& kv : _chunk_meta.slot_id_to_index) {
             for (auto slot : slots) {
@@ -253,7 +250,6 @@ Status TabletsChannel::close(int sender_id, bool* finished,
             *finished = (_num_remaining_senders == 0);
             return _close_status;
         }
-        LOG(INFO) << "Closing tablets channel=" << _key << " sender id=" << sender_id;
         for (auto pid : partition_ids) {
             _partition_ids.emplace(pid);
         }

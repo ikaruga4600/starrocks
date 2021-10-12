@@ -14,8 +14,7 @@
 #include "util/debug_util.h"
 #include "util/md5.h"
 
-namespace starrocks {
-namespace vectorized {
+namespace starrocks::vectorized {
 
 ColumnPtr EncryptionFunctions::aes_encrypt(FunctionContext* ctx, const Columns& columns) {
     auto src_viewer = ColumnViewer<TYPE_VARCHAR>(columns[0]);
@@ -40,7 +39,7 @@ ColumnPtr EncryptionFunctions::aes_encrypt(FunctionContext* ctx, const Columns& 
 
         auto key_value = key_viewer.value(row);
         int len = AesUtil::encrypt(AES_128_ECB, (unsigned char*)src_value.data, src_value.size,
-                                   (unsigned char*)key_value.data, key_value.size, NULL, true, (unsigned char*)p);
+                                   (unsigned char*)key_value.data, key_value.size, nullptr, true, (unsigned char*)p);
         if (len < 0) {
             result.append_null();
             continue;
@@ -75,7 +74,7 @@ ColumnPtr EncryptionFunctions::aes_decrypt(FunctionContext* ctx, const Columns& 
         char p[cipher_len];
 
         int len = AesUtil::decrypt(AES_128_ECB, (unsigned char*)src_value.data, src_value.size,
-                                   (unsigned char*)key_value.data, key_value.size, NULL, true, (unsigned char*)p);
+                                   (unsigned char*)key_value.data, key_value.size, nullptr, true, (unsigned char*)p);
 
         if (len < 0) {
             result.append_null();
@@ -155,7 +154,7 @@ ColumnPtr EncryptionFunctions::to_base64(FunctionContext* ctx, const Columns& co
 ColumnPtr EncryptionFunctions::md5sum(FunctionContext* ctx, const Columns& columns) {
     std::vector<ColumnViewer<TYPE_VARCHAR>> list;
     list.reserve(columns.size());
-    for (ColumnPtr col : columns) {
+    for (const ColumnPtr& col : columns) {
         list.emplace_back(ColumnViewer<TYPE_VARCHAR>(col));
     }
 
@@ -200,5 +199,4 @@ ColumnPtr EncryptionFunctions::md5(FunctionContext* ctx, const Columns& columns)
     return result.build(ColumnHelper::is_all_const(columns));
 }
 
-} // namespace vectorized
-} // namespace starrocks
+} // namespace starrocks::vectorized

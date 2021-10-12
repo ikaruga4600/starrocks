@@ -22,9 +22,8 @@
 #ifndef STARROCKS_BE_RUNTIME_BUFFER_POOL_H
 #define STARROCKS_BE_RUNTIME_BUFFER_POOL_H
 
-#include <stdint.h>
-
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -293,7 +292,8 @@ protected:
     BufferAllocator* allocator() { return allocator_.get(); }
 
 private:
-    DISALLOW_COPY_AND_ASSIGN(BufferPool);
+    BufferPool(const BufferPool&) = delete;
+    const BufferPool& operator=(const BufferPool&) = delete;
     class Client;
     class FreeBufferArena;
     class PageList;
@@ -316,7 +316,7 @@ private:
 /// Client methods or BufferPool methods with the Client as an argument is not supported.
 class BufferPool::ClientHandle {
 public:
-    ClientHandle() : impl_(NULL) {}
+    ClientHandle() {}
     /// Client must be deregistered.
     ~ClientHandle() { DCHECK(!is_registered()); }
 
@@ -363,7 +363,7 @@ public:
     /// Call SetDebugDenyIncreaseReservation() on this client's ReservationTracker.
     void SetDebugDenyIncreaseReservation(double probability);
 
-    bool is_registered() const { return impl_ != NULL; }
+    bool is_registered() const { return impl_ != nullptr; }
 
     /// Return true if there are any unpinned pages for this client.
     bool has_unpinned_pages() const;
@@ -374,11 +374,12 @@ private:
     friend class BufferPool;
     friend class BufferPoolTest;
     friend class SubReservation;
-    DISALLOW_COPY_AND_ASSIGN(ClientHandle);
+    ClientHandle(const ClientHandle&) = delete;
+    const ClientHandle& operator=(const ClientHandle&) = delete;
 
     /// Internal state for the client. NULL means the client isn't registered.
     /// Owned by BufferPool.
-    Client* impl_;
+    Client* impl_{nullptr};
 };
 
 /// Helper class that allows dividing up a client's reservation into separate buckets.
@@ -398,7 +399,8 @@ public:
 
 private:
     friend class BufferPool::ClientHandle;
-    DISALLOW_COPY_AND_ASSIGN(SubReservation);
+    SubReservation(const SubReservation&) = delete;
+    const SubReservation& operator=(const SubReservation&) = delete;
 
     /// Child of the client's tracker used to track the sub-reservation. Usage is not
     /// tracked against this tracker - instead the reservation is always transferred back
@@ -416,13 +418,13 @@ public:
 
     /// Allow move construction of handles to support std::move(). Inline to make moving
     /// efficient.
-    inline BufferHandle(BufferHandle&& src);
+    inline BufferHandle(BufferHandle&& src) noexcept;
 
     /// Allow move assignment of handles to support STL classes like std::vector.
     /// Destination must be uninitialized. Inline to make moving efficient.
-    inline BufferHandle& operator=(BufferHandle&& src);
+    inline BufferHandle& operator=(BufferHandle&& src) noexcept;
 
-    bool is_open() const { return data_ != NULL; }
+    bool is_open() const { return data_ != nullptr; }
     int64_t len() const {
         DCHECK(is_open());
         return len_;
@@ -446,7 +448,8 @@ public:
     void Unpoison() { ASAN_UNPOISON_MEMORY_REGION(data(), len()); }
 
 private:
-    DISALLOW_COPY_AND_ASSIGN(BufferHandle);
+    BufferHandle(const BufferHandle&) = delete;
+    const BufferHandle& operator=(const BufferHandle&) = delete;
     friend class BufferPool;
     friend class SystemAllocator;
 
@@ -481,13 +484,13 @@ public:
     ~PageHandle() { DCHECK(!is_open()); }
 
     // Allow move construction of page handles, to support std::move().
-    PageHandle(PageHandle&& src);
+    PageHandle(PageHandle&& src) noexcept;
 
     // Allow move assignment of page handles, to support STL classes like std::vector.
     // Destination must be closed.
-    PageHandle& operator=(PageHandle&& src);
+    PageHandle& operator=(PageHandle&& src) noexcept;
 
-    bool is_open() const { return page_ != NULL; }
+    bool is_open() const { return page_ != nullptr; }
     bool is_pinned() const { return pin_count() > 0; }
     int pin_count() const;
     int64_t len() const;
@@ -504,7 +507,8 @@ public:
     std::string DebugString() const;
 
 private:
-    DISALLOW_COPY_AND_ASSIGN(PageHandle);
+    PageHandle(const PageHandle&) = delete;
+    const PageHandle& operator=(const PageHandle&) = delete;
     friend class BufferPool;
     friend class BufferPoolTest;
     friend class Page;
@@ -522,12 +526,12 @@ private:
     ClientHandle* client_;
 };
 
-inline BufferPool::BufferHandle::BufferHandle(BufferHandle&& src) {
+inline BufferPool::BufferHandle::BufferHandle(BufferHandle&& src) noexcept {
     Reset();
     *this = std::move(src);
 }
 
-inline BufferPool::BufferHandle& BufferPool::BufferHandle::operator=(BufferHandle&& src) {
+inline BufferPool::BufferHandle& BufferPool::BufferHandle::operator=(BufferHandle&& src) noexcept {
     DCHECK(!is_open());
     // Copy over all members then close src.
     client_ = src.client_;
@@ -539,8 +543,8 @@ inline BufferPool::BufferHandle& BufferPool::BufferHandle::operator=(BufferHandl
 }
 
 inline void BufferPool::BufferHandle::Reset() {
-    client_ = NULL;
-    data_ = NULL;
+    client_ = nullptr;
+    data_ = nullptr;
     len_ = -1;
     home_core_ = -1;
 }

@@ -29,7 +29,7 @@
 
 namespace starrocks {
 
-CIDR::CIDR() : _address(0), _netmask(0xffffffff) {}
+CIDR::CIDR() {}
 
 void CIDR::reset() {
     _address = 0;
@@ -41,7 +41,7 @@ bool CIDR::reset(const std::string& cidr_str) {
 
     // check if have mask
     std::string cidr_format_str = cidr_str;
-    size_t have_mask = cidr_str.find("/");
+    size_t have_mask = cidr_str.find('/');
     if (have_mask == string::npos) {
         cidr_format_str.assign(cidr_str + "/32");
     }

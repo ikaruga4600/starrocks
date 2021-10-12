@@ -12,8 +12,7 @@
 #include "storage/update_manager.h"
 #include "storage/vectorized/memtable.h"
 
-namespace starrocks {
-namespace vectorized {
+namespace starrocks::vectorized {
 
 Status DeltaWriter::open(WriteRequest* req, MemTracker* mem_tracker, DeltaWriter** writer) {
     *writer = new DeltaWriter(req, mem_tracker, StorageEngine::instance());
@@ -45,10 +44,6 @@ DeltaWriter::~DeltaWriter() {
     if (_flush_token != nullptr) {
         // cancel and wait all memtables in flush queue to be finished
         _flush_token->cancel();
-    }
-
-    if (_tablet != nullptr) {
-        _tablet->data_dir()->remove_pending_ids(ROWSET_ID_PREFIX + _rowset_writer->rowset_id().to_string());
     }
 }
 
@@ -310,5 +305,4 @@ int64_t DeltaWriter::partition_id() const {
     return _req.partition_id;
 }
 
-} // namespace vectorized
-} // namespace starrocks
+} // namespace starrocks::vectorized

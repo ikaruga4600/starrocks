@@ -2762,13 +2762,13 @@ using EnableIfMutable = typename std::enable_if<!std::is_const<T>::value, int>::
 
 template <typename T>
 bool EqualImpl(Span<T> a, Span<T> b) {
-    static_assert(std::is_const<T>::value, "");
+    static_assert(std::is_const<T>::value);
     return std::equal(a.begin(), a.end(), b.begin(), b.end());
 }
 
 template <typename T>
 bool LessThanImpl(Span<T> a, Span<T> b) {
-    static_assert(std::is_const<T>::value, "");
+    static_assert(std::is_const<T>::value);
     return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
 }
 
@@ -3857,7 +3857,7 @@ public:
 
     template <class... Sizes>
     static constexpr PartialType<sizeof...(Sizes)> Partial(Sizes&&... sizes) {
-        static_assert(sizeof...(Sizes) <= sizeof...(Ts), "");
+        static_assert(sizeof...(Sizes) <= sizeof...(Ts));
         return PartialType<sizeof...(Sizes)>(phmap::forward<Sizes>(sizes)...);
     }
 
@@ -4054,7 +4054,7 @@ namespace priv {
 // ----------------------------------------------------------------------------
 template <size_t Alignment, class Alloc>
 void* Allocate(Alloc* alloc, size_t n) {
-    static_assert(Alignment > 0, "");
+    static_assert(Alignment > 0);
     assert(n && "n must be positive");
     struct alignas(Alignment) M {};
     using A = typename phmap::allocator_traits<Alloc>::template rebind_alloc<M>;
@@ -4071,7 +4071,7 @@ void* Allocate(Alloc* alloc, size_t n) {
 // ----------------------------------------------------------------------------
 template <size_t Alignment, class Alloc>
 void Deallocate(Alloc* alloc, void* p, size_t n) {
-    static_assert(Alignment > 0, "");
+    static_assert(Alignment > 0);
     assert(n && "n must be positive");
     struct alignas(Alignment) M {};
     using A = typename phmap::allocator_traits<Alloc>::template rebind_alloc<M>;
@@ -4461,7 +4461,7 @@ public:
         template <class T>
         explicit DoNothing(T&&) {}
         DoNothing& operator=(const DoNothing&) { return *this; }
-        DoNothing& operator=(DoNothing&&) { return *this; }
+        DoNothing& operator=(DoNothing&&) noexcept { return *this; }
         void swap(DoNothing&) {}
         bool owns_lock() const noexcept { return true; }
     };
@@ -4471,7 +4471,7 @@ public:
     public:
         using mutex_type = MutexType;
 
-        WriteLock() : m_(nullptr), locked_(false) {}
+        WriteLock() : m_(nullptr) {}
 
         explicit WriteLock(mutex_type& m) : m_(&m) {
             m_->lock();
@@ -4484,12 +4484,12 @@ public:
 
         WriteLock(mutex_type& m, try_to_lock_t) : m_(&m), locked_(false) { m_->try_lock(); }
 
-        WriteLock(WriteLock&& o) : m_(std::move(o.m_)), locked_(std::move(o.locked_)) {
+        WriteLock(WriteLock&& o) noexcept : m_(std::move(o.m_)), locked_(std::move(o.locked_)) {
             o.locked_ = false;
             o.m_ = nullptr;
         }
 
-        WriteLock& operator=(WriteLock&& other) {
+        WriteLock& operator=(WriteLock&& other) noexcept {
             WriteLock temp(std::move(other));
             swap(temp);
             return *this;
@@ -4530,7 +4530,7 @@ public:
 
     private:
         mutex_type* m_;
-        bool locked_;
+        bool locked_{false};
     };
 
     // ----------------------------------------------------
@@ -4538,7 +4538,7 @@ public:
     public:
         using mutex_type = MutexType;
 
-        ReadLock() : m_(nullptr), locked_(false) {}
+        ReadLock() : m_(nullptr) {}
 
         explicit ReadLock(mutex_type& m) : m_(&m) {
             m_->lock_shared();
@@ -4551,12 +4551,12 @@ public:
 
         ReadLock(mutex_type& m, try_to_lock_t) : m_(&m), locked_(false) { m_->try_lock_shared(); }
 
-        ReadLock(ReadLock&& o) : m_(std::move(o.m_)), locked_(std::move(o.locked_)) {
+        ReadLock(ReadLock&& o) noexcept : m_(std::move(o.m_)), locked_(std::move(o.locked_)) {
             o.locked_ = false;
             o.m_ = nullptr;
         }
 
-        ReadLock& operator=(ReadLock&& other) {
+        ReadLock& operator=(ReadLock&& other) noexcept {
             ReadLock temp(std::move(other));
             swap(temp);
             return *this;
@@ -4597,7 +4597,7 @@ public:
 
     private:
         mutex_type* m_;
-        bool locked_;
+        bool locked_{false};
     };
 
     // ----------------------------------------------------

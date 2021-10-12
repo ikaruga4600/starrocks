@@ -9,11 +9,9 @@
 #include "storage/update_manager.h"
 #include "storage/vectorized/chunk_helper.h"
 
-namespace starrocks {
+namespace starrocks::vectorized {
 
-namespace vectorized {
-
-CompactionState::CompactionState() {}
+CompactionState::CompactionState() = default;
 
 CompactionState::~CompactionState() {
     StorageEngine::instance()->update_manager()->compaction_state_mem_tracker()->release(_memory_usage);
@@ -70,7 +68,7 @@ Status CompactionState::_do_load(Rowset* rowset) {
     RowsetReleaseGuard guard(rowset->shared_from_this());
     OlapReaderStatistics stats;
     auto beta_rowset = down_cast<BetaRowset*>(rowset);
-    auto res = beta_rowset->get_segment_iterators2(pkey_schema, NULL, 0, &stats);
+    auto res = beta_rowset->get_segment_iterators2(pkey_schema, nullptr, 0, &stats);
     if (!res.ok()) {
         return res.status();
     }
@@ -84,7 +82,7 @@ Status CompactionState::_do_load(Rowset* rowset) {
 
     for (size_t i = 0; i < itrs.size(); i++) {
         auto itr = itrs[i].get();
-        if (itr == NULL) {
+        if (itr == nullptr) {
             continue;
         }
         auto& dest = segment_states[i].pkeys;
@@ -124,6 +122,4 @@ Status CompactionState::_do_load(Rowset* rowset) {
     return Status::OK();
 }
 
-} // namespace vectorized
-
-} // namespace starrocks
+} // namespace starrocks::vectorized
