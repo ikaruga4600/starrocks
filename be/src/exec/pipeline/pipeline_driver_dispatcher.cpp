@@ -10,6 +10,10 @@ GlobalDriverDispatcher::GlobalDriverDispatcher(std::unique_ptr<ThreadPool> threa
           _blocked_driver_poller(new PipelineDriverPoller(_driver_queue.get())),
           _exec_state_reporter(new ExecStateReporter()) {}
 
+GlobalDriverDispatcher::~GlobalDriverDispatcher() {
+    _driver_queue->close();
+}
+
 void GlobalDriverDispatcher::initialize(int num_threads) {
     _blocked_driver_poller->start();
     _num_threads_setter.set_actual_num(num_threads);
@@ -28,12 +32,12 @@ void GlobalDriverDispatcher::change_num_threads(int32_t num_threads) {
     }
 }
 
-void GlobalDriverDispatcher::finalize_driver(DriverPtr& driver, RuntimeState* runtime_state, DriverState state) {
+void GlobalDriverDispatcher::finalize_driver(DriverRawPtr driver, RuntimeState* runtime_state, DriverState state) {
     DCHECK(driver);
     driver->finalize(runtime_state, state);
     if (driver->query_ctx()->is_finished()) {
         auto query_id = driver->query_ctx()->query_id();
-        driver.reset();
+        DCHECK(!driver->source_operator()->pending_finish());
         QueryContextManager::instance()->remove(query_id);
     }
 }
@@ -45,14 +49,19 @@ void GlobalDriverDispatcher::run() {
         }
 
         size_t queue_index;
-        auto driver = this->_driver_queue->take(&queue_index);
+        auto maybe_driver = this->_driver_queue->take(&queue_index);
+        if (maybe_driver.status().is_cancelled()) {
+            return;
+        }
+        auto driver = maybe_driver.value();
         DCHECK(driver != nullptr);
+
         auto* query_ctx = driver->query_ctx();
         auto* fragment_ctx = driver->fragment_ctx();
         auto* runtime_state = fragment_ctx->runtime_state();
 
         if (fragment_ctx->is_canceled()) {
-            VLOG_ROW << "[Driver] Canceled: driver=" << driver.get()
+            VLOG_ROW << "[Driver] Canceled: driver=" << driver
                      << ", error=" << fragment_ctx->final_status().to_string();
             driver->cancel(runtime_state);
             if (driver->source_operator()->pending_finish()) {
@@ -117,7 +126,7 @@ void GlobalDriverDispatcher::run() {
     }
 }
 
-void GlobalDriverDispatcher::dispatch(DriverPtr driver) {
+void GlobalDriverDispatcher::dispatch(DriverRawPtr driver) {
     this->_driver_queue->put_back(driver);
 }
 
