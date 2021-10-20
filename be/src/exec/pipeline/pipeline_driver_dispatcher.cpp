@@ -63,7 +63,7 @@ void GlobalDriverDispatcher::run() {
         if (fragment_ctx->is_canceled()) {
             VLOG_ROW << "[Driver] Canceled: driver=" << driver
                      << ", error=" << fragment_ctx->final_status().to_string();
-            driver->cancel(runtime_state);
+            driver->finish_operators(runtime_state);
             if (driver->source_operator()->pending_finish()) {
                 driver->set_driver_state(DriverState::PENDING_FINISH);
                 _blocked_driver_poller->add_blocked_driver(driver);
@@ -77,6 +77,7 @@ void GlobalDriverDispatcher::run() {
             finalize_driver(driver, runtime_state, driver->driver_state());
             continue;
         }
+
         // query context has ready drivers to run, so extend its lifetime.
         query_ctx->extend_lifetime();
         auto status = driver->process(runtime_state);
@@ -85,7 +86,7 @@ void GlobalDriverDispatcher::run() {
         if (!status.ok()) {
             VLOG_ROW << "[Driver] Process error: error=" << status.status().to_string();
             query_ctx->cancel(status.status());
-            driver->cancel(runtime_state);
+            driver->finish_operators(runtime_state);
             if (driver->source_operator()->pending_finish()) {
                 driver->set_driver_state(DriverState::PENDING_FINISH);
                 _blocked_driver_poller->add_blocked_driver(driver);
@@ -114,7 +115,8 @@ void GlobalDriverDispatcher::run() {
         }
         case INPUT_EMPTY:
         case OUTPUT_FULL:
-        case PENDING_FINISH: {
+        case PENDING_FINISH:
+        case DEPENDENCIES_BLOCK: {
             VLOG_ROW << strings::Substitute("[Driver] Blocked, source=$0, state=$1",
                                             driver->source_operator()->get_name(), ds_to_string(driver_state));
             _blocked_driver_poller->add_blocked_driver(driver);

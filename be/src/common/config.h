@@ -50,6 +50,8 @@ CONF_String(priority_networks, "");
 CONF_mInt64(tc_use_memory_min, "10737418240");
 // free memory rate.[0-100]
 CONF_mInt64(tc_free_memory_rate, "20");
+// tcmalloc gc period, default 60, it should be between [1, 180]
+CONF_mInt64(tc_gc_period, "60");
 
 // Bound on the total amount of bytes allocated to thread caches.
 // This bound is not strict, so it is possible for the cache to go over this bound
@@ -178,7 +180,7 @@ CONF_mInt32(status_report_interval, "5");
 // Local directory to copy UDF libraries from HDFS into
 CONF_String(local_library_dir, "${UDF_RUNTIME_DIR}");
 // number of olap scanner thread pool size
-CONF_Int32(doris_scanner_thread_pool_thread_num, "48");
+CONF_mInt32(doris_scanner_thread_pool_thread_num, "48");
 // number of olap scanner thread pool size
 CONF_Int32(doris_scanner_thread_pool_queue_size, "102400");
 // number of etl thread pool size
@@ -261,6 +263,8 @@ CONF_Int64(index_stream_cache_capacity, "10737418240");
 CONF_String(storage_page_cache_limit, "0");
 // whether to disable page cache feature in storage
 CONF_Bool(disable_storage_page_cache, "true");
+// whether to disable column pool
+CONF_Bool(disable_column_pool, "false");
 
 CONF_mInt32(base_compaction_check_interval_seconds, "60");
 CONF_mInt64(base_compaction_num_cumulative_deltas, "5");
@@ -430,12 +434,6 @@ CONF_Bool(madvise_huge_pages, "false");
 
 // whether use mmap to allocate memory
 CONF_Bool(mmap_buffers, "false");
-
-// max memory can be allocated by buffer pool
-CONF_String(buffer_pool_limit, "80G");
-
-// clean page can be hold by buffer pool
-CONF_String(buffer_pool_clean_pages_limit, "20G");
 
 // Sleep time in seconds between memory maintenance iterations
 CONF_mInt64(memory_maintenance_sleep_time_s, "10");
@@ -630,6 +628,8 @@ CONF_Int64(pipeline_io_thread_pool_queue_size, "102400");
 CONF_Int64(pipeline_exec_thread_pool_thread_num, "3");
 // bitmap serialize version
 CONF_Int16(bitmap_serialize_version, "1");
+// schema change vectorized
+CONF_Bool(enable_schema_change_vectorized, "false");
 
 } // namespace config
 

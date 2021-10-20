@@ -28,7 +28,6 @@
 #include "column/column_pool.h"
 #include "common/config.h"
 #include "common/minidump.h"
-#include "runtime/bufferpool/buffer_pool.h"
 #include "runtime/exec_env.h"
 #include "runtime/mem_tracker.h"
 #include "runtime/memory/chunk_allocator.h"
@@ -38,8 +37,10 @@
 #include "util/cpu_info.h"
 #include "util/debug_util.h"
 #include "util/disk_info.h"
+#include "util/gc_helper.h"
 #include "util/logging.h"
 #include "util/mem_info.h"
+#include "util/monotime.h"
 #include "util/network_util.h"
 #include "util/starrocks_metrics.h"
 #include "util/system_metrics.h"
@@ -69,8 +70,9 @@ private:
 void* tcmalloc_gc_thread(void* dummy) {
     using namespace starrocks::vectorized;
     const static float kFreeRatio = 0.5;
+    GCHelper gch(config::tc_gc_period, config::memory_maintenance_sleep_time_s, MonoTime::Now());
     while (true) {
-        sleep(10);
+        sleep(config::memory_maintenance_sleep_time_s);
 #if !defined(ADDRESS_SANITIZER) && !defined(LEAK_SANITIZER) && !defined(THREAD_SANITIZER)
         MallocExtension::instance()->MarkThreadBusy();
 #endif
@@ -98,39 +100,26 @@ void* tcmalloc_gc_thread(void* dummy) {
         MallocExtension::instance()->GetNumericProperty("generic.current_allocated_bytes", &used_size);
         MallocExtension::instance()->GetNumericProperty("tcmalloc.pageheap_free_bytes", &free_size);
         size_t phy_size = used_size + free_size; // physical memory usage
+        size_t total_bytes_to_gc = 0;
         if (phy_size > config::tc_use_memory_min) {
             size_t max_free_size = phy_size * config::tc_free_memory_rate / 100;
             if (free_size > max_free_size) {
-                MallocExtension::instance()->ReleaseToSystem(free_size - max_free_size);
+                total_bytes_to_gc = free_size - max_free_size;
+            }
+        }
+        size_t bytes_to_gc = gch.bytes_should_gc(MonoTime::Now(), total_bytes_to_gc);
+        if (bytes_to_gc > 0) {
+            size_t bytes = bytes_to_gc;
+            while (bytes >= GCBYTES_ONE_STEP) {
+                MallocExtension::instance()->ReleaseToSystem(GCBYTES_ONE_STEP);
+                bytes -= GCBYTES_ONE_STEP;
+            }
+            if (bytes > 0) {
+                MallocExtension::instance()->ReleaseToSystem(bytes);
             }
         }
         MallocExtension::instance()->MarkThreadIdle();
 #endif
-    }
-
-    return nullptr;
-}
-
-void* memory_maintenance_thread(void* dummy) {
-    while (true) {
-        sleep(config::memory_maintenance_sleep_time_s);
-        ExecEnv* env = ExecEnv::GetInstance();
-        // ExecEnv may not have been created yet or this may be the catalogd or statestored,
-        // which don't have ExecEnvs.
-        if (env != nullptr) {
-            BufferPool* buffer_pool = env->buffer_pool();
-            if (buffer_pool != nullptr) buffer_pool->Maintenance();
-
-            // The process limit as measured by our trackers may get out of sync with the
-            // process usage if memory is allocated or freed without updating a MemTracker.
-            // The metric is refreshed whenever memory is consumed or released via a MemTracker,
-            // so on a system with queries executing it will be refreshed frequently. However
-            // if the system is idle, we need to refresh the tracker occasionally since
-            // untracked memory may be allocated or freed, e.g. by background threads.
-            if (env->process_mem_tracker() != nullptr && !env->process_mem_tracker()->is_consumption_metric_null()) {
-                env->process_mem_tracker()->RefreshConsumptionFromMetric();
-            }
-        }
     }
 
     return nullptr;
@@ -292,9 +281,6 @@ void init_daemon(int argc, char** argv, const std::vector<StorePath>& paths) {
 
     pthread_t tc_malloc_pid;
     pthread_create(&tc_malloc_pid, nullptr, tcmalloc_gc_thread, nullptr);
-
-    pthread_t buffer_pool_pid;
-    pthread_create(&buffer_pool_pid, nullptr, memory_maintenance_thread, nullptr);
 
     LOG(INFO) << CpuInfo::debug_string();
     LOG(INFO) << DiskInfo::debug_string();

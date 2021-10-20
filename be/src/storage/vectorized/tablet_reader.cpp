@@ -4,6 +4,7 @@
 
 #include <column/datum_convert.h>
 
+#include "common/status.h"
 #include "gutil/stl_util.h"
 #include "service/backend_options.h"
 #include "storage/tablet.h"
@@ -21,7 +22,9 @@
 namespace starrocks::vectorized {
 
 TabletReader::TabletReader(TabletSharedPtr tablet, const Version& version, Schema schema)
-        : ChunkIterator(std::move(schema)), _tablet(std::move(tablet)), _version(version), _mempool(&_memtracker) {}
+        : ChunkIterator(std::move(schema)), _tablet(tablet), _version(version), _mempool(&_memtracker) {
+    _delete_predicates_version = version;
+}
 
 void TabletReader::close() {
     if (_collect_iter != nullptr) {
@@ -39,7 +42,8 @@ Status TabletReader::prepare() {
 }
 
 Status TabletReader::open(const TabletReaderParams& read_params) {
-    if (read_params.reader_type != ReaderType::READER_QUERY && !is_compaction(read_params.reader_type)) {
+    if (read_params.reader_type != ReaderType::READER_QUERY && read_params.reader_type != ReaderType::READER_CHECKSUM &&
+        read_params.reader_type != ReaderType::READER_ALTER_TABLE && !is_compaction(read_params.reader_type)) {
         return Status::NotSupported("reader type not supported now");
     }
     Status st = _init_collector(read_params);
@@ -75,6 +79,7 @@ Status TabletReader::_init_collector(const TabletReaderParams& params) {
     rs_opts.profile = params.profile;
     rs_opts.use_page_cache = params.use_page_cache;
     rs_opts.tablet_schema = &(_tablet->tablet_schema());
+    rs_opts.global_dictmaps = params.global_dictmaps;
     if (keys_type == KeysType::PRIMARY_KEYS) {
         rs_opts.is_primary_keys = true;
         rs_opts.version = _version.second;
@@ -185,6 +190,11 @@ Status TabletReader::_init_collector(const TabletReaderParams& params) {
     } else {
         return Status::InternalError("Unknown keys type");
     }
+
+    if (_collect_iter != nullptr) {
+        RETURN_IF_ERROR(_collect_iter->init_res_schema(*params.global_dictmaps));
+    }
+
     return Status::OK();
 }
 
@@ -201,7 +211,7 @@ Status TabletReader::_init_delete_predicates(const TabletReaderParams& params, D
     _tablet->obtain_header_rdlock();
 
     for (const DeletePredicatePB& pred_pb : _tablet->delete_predicates()) {
-        if (pred_pb.version() > _version.second) {
+        if (pred_pb.version() > _delete_predicates_version.second) {
             continue;
         }
 

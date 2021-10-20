@@ -71,6 +71,7 @@ set(EXEC_FILES
         ./exprs/vectorized/hash_functions_test.cpp
         ./exprs/vectorized/hyperloglog_functions_test.cpp
         ./exprs/vectorized/if_expr_test.cpp
+        ./exprs/vectorized/function_helper_test.cpp
         ./exprs/vectorized/in_iterator_predicate_test.cpp
         ./exprs/vectorized/in_predicate_test.cpp
         ./exprs/vectorized/is_null_predicate_test.cpp
@@ -210,6 +211,7 @@ set(EXEC_FILES
         ./util/block_compression_test.cpp
         ./util/blocking_queue_test.cpp
         ./util/brpc_stub_cache_test.cpp
+        ./util/c_string_test.cpp
         ./util/cidr_test.cpp
         ./util/coding_test.cpp
         ./util/core_local_test.cpp
@@ -244,6 +246,7 @@ set(EXEC_FILES
         ./util/buffered_stream_test.cpp
         ./util/int96_test.cpp
         ./util/bit_packing_test.cpp
+        ./util/gc_helper_test.cpp
         )
 
 if (USE_AVX2)

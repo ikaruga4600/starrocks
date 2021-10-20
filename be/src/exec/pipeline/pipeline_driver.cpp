@@ -12,13 +12,22 @@
 
 namespace starrocks::pipeline {
 Status PipelineDriver::prepare(RuntimeState* runtime_state) {
-    if (_state == DriverState::NOT_READY) {
-        source_operator()->add_morsel_queue(_morsel_queue);
-        for (auto& op : _operators) {
-            RETURN_IF_ERROR(op->prepare(runtime_state));
+    DCHECK(_state == DriverState::NOT_READY);
+    // fill OperatorWithDependency instances into _dependencies from _operators.
+    DCHECK(_dependencies.empty());
+    _dependencies.reserve(_operators.size());
+    for (auto& op : _operators) {
+        if (auto* op_with_dep = dynamic_cast<DriverDependencyPtr>(op.get())) {
+            _dependencies.push_back(op_with_dep);
         }
-        _state = DriverState::READY;
     }
+    source_operator()->add_morsel_queue(_morsel_queue);
+    for (auto& op : _operators) {
+        RETURN_IF_ERROR(op->prepare(runtime_state));
+    }
+    // Driver has no dependencies always sets _all_dependencies_ready to true;
+    _all_dependencies_ready = _dependencies.empty();
+    _state = DriverState::READY;
     return Status::OK();
 }
 
@@ -56,9 +65,8 @@ StatusOr<DriverState> PipelineDriver::process(RuntimeState* runtime_state) {
                     continue;
                 }
 
-                // check whether fragment is finished beforehand before pull_chunk
-                if (_fragment_ctx->is_canceled()) {
-                    return _fragment_ctx->final_status().ok() ? DriverState::FINISH : DriverState::CANCELED;
+                if (_check_fragment_is_canceled(runtime_state)) {
+                    return _state;
                 }
 
                 // pull chunk from current operator and push the chunk onto next
@@ -70,9 +78,8 @@ StatusOr<DriverState> PipelineDriver::process(RuntimeState* runtime_state) {
                     return status;
                 }
 
-                // check whether fragment is finished beforehand before push_chunk
-                if (_fragment_ctx->is_canceled()) {
-                    return _fragment_ctx->final_status().ok() ? DriverState::FINISH : DriverState::CANCELED;
+                if (_check_fragment_is_canceled(runtime_state)) {
+                    return _state;
                 }
 
                 if (status.ok()) {
@@ -114,19 +121,23 @@ StatusOr<DriverState> PipelineDriver::process(RuntimeState* runtime_state) {
         _first_unfinished = _new_first_unfinished;
 
         if (sink_operator()->is_finished()) {
+            finish_operators(runtime_state);
             _state = source_operator()->pending_finish() ? DriverState::PENDING_FINISH : DriverState::FINISH;
             return _state;
         }
 
         // no chunk moved in current round means that the driver is blocked.
-        // should yield means that the CPU core is occupied the driver for the
-        // a very long time so that the driver should switch off the core and
+        // should yield means that the CPU core is occupied the driver for a
+        // very long time so that the driver should switch off the core and
         // give chance for another ready driver to run.
         if (num_chunk_moved == 0 || should_yield) {
             driver_acct().increment_schedule_times();
             driver_acct().update_last_chunks_moved(total_chunks_moved);
             driver_acct().update_last_time_spent(time_spent);
-            if (!sink_operator()->is_finished() && !sink_operator()->need_input()) {
+            if (dependencies_block()) {
+                _state = DriverState::DEPENDENCIES_BLOCK;
+                return DriverState::DEPENDENCIES_BLOCK;
+            } else if (!sink_operator()->is_finished() && !sink_operator()->need_input()) {
                 _state = DriverState::OUTPUT_FULL;
                 return DriverState::OUTPUT_FULL;
             }
@@ -140,7 +151,7 @@ StatusOr<DriverState> PipelineDriver::process(RuntimeState* runtime_state) {
     }
 }
 
-void PipelineDriver::cancel(RuntimeState* state) {
+void PipelineDriver::finish_operators(RuntimeState* state) {
     for (auto i = _first_unfinished; i < _operators.size(); ++i) {
         _operators[i]->finish(state);
     }
@@ -194,4 +205,20 @@ std::string PipelineDriver::to_debug_string() const {
     ss << "]";
     return ss.str();
 }
+
+bool PipelineDriver::_check_fragment_is_canceled(RuntimeState* runtime_state) {
+    if (_fragment_ctx->is_canceled()) {
+        finish_operators(runtime_state);
+        // If the fragment is cancelled after the source operator commits an i/o task to i/o threads,
+        // the driver cannot be finished immediately and should wait for the completion of the pending i/o task.
+        if (source_operator()->pending_finish()) {
+            _state = DriverState::PENDING_FINISH;
+        } else {
+            _state = _fragment_ctx->final_status().ok() ? DriverState::FINISH : DriverState::CANCELED;
+        }
+        return true;
+    }
+    return false;
+}
+
 } // namespace starrocks::pipeline

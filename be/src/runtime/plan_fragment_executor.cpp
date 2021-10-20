@@ -71,7 +71,8 @@ Status PlanFragmentExecutor::prepare(const TExecPlanFragmentParams& request) {
               << " fragment_instance_id=" << print_id(params.fragment_instance_id)
               << " backend_num=" << request.backend_num;
 
-    _runtime_state = std::make_unique<RuntimeState>(request, request.query_options, request.query_globals, _exec_env);
+    _runtime_state = std::make_unique<RuntimeState>(params.query_id, params.fragment_instance_id, request.query_options,
+                                                    request.query_globals, _exec_env);
 
     if (_is_vectorized) {
         _runtime_state->set_batch_size(config::vector_chunk_size);
@@ -118,14 +119,8 @@ Status PlanFragmentExecutor::prepare(const TExecPlanFragmentParams& request) {
                      << ". Using process memory limit instead";
         bytes_limit = _exec_env->query_pool_mem_tracker()->limit();
     }
-    // NOTE: this MemTracker only for olap
-    _mem_tracker =
-            std::make_unique<MemTracker>(bytes_limit, "fragment mem-limit", _exec_env->query_pool_mem_tracker(), true);
-    _runtime_state->set_fragment_mem_tracker(_mem_tracker.get());
 
     LOG(INFO) << "Using query memory limit: " << PrettyPrinter::print(bytes_limit, TUnit::BYTES);
-
-    RETURN_IF_ERROR(_runtime_state->create_block_mgr());
 
     // set up desc tbl
     DescriptorTbl* desc_tbl = nullptr;
@@ -143,6 +138,10 @@ Status PlanFragmentExecutor::prepare(const TExecPlanFragmentParams& request) {
         DCHECK(request.params.__isset.debug_phase);
         ExecNode::set_debug_options(request.params.debug_node_id, request.params.debug_phase,
                                     request.params.debug_action, _plan);
+    }
+
+    if (request.fragment.__isset.global_dicts) {
+        RETURN_IF_ERROR(_runtime_state->init_global_dict(request.fragment.global_dicts));
     }
 
     // set #senders of exchange nodes before calling Prepare()
@@ -219,6 +218,7 @@ Status PlanFragmentExecutor::prepare(const TExecPlanFragmentParams& request) {
         _is_runtime_filter_merge_node = true;
         _exec_env->runtime_filter_worker()->open_query(_query_id, request.query_options, params.runtime_filter_params);
     }
+
     return Status::OK();
 }
 

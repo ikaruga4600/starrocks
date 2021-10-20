@@ -6,6 +6,7 @@ import com.google.common.collect.ImmutableList;
 import com.starrocks.sql.optimizer.base.HashDistributionDesc;
 import com.starrocks.sql.optimizer.base.HashDistributionSpec;
 import com.starrocks.sql.optimizer.base.Ordering;
+import com.starrocks.sql.optimizer.operator.Operator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalAggregationOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalApplyOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalAssertOneRowOperator;
@@ -383,6 +384,18 @@ public class OperatorStrings {
             }
 
             return new OperatorStr(s, step, new ArrayList<>(childString));
+        }
+
+        @Override
+        public OperatorStr visitPhysicalDecode(OptExpression optExpression, Integer step) {
+            OperatorStr child = visit(optExpression.getInputs().get(0), step + 1);
+            String sb = "Decode ";
+            return new OperatorStr(sb, step, Collections.singletonList(child));
+        }
+
+        @Override
+        public OperatorStr visitPhysicalLimit(OptExpression optExpression, Integer step) {
+            return visit(optExpression.getInputs().get(0), step);
         }
     }
 }
