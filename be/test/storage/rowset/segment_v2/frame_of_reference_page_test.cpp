@@ -26,7 +26,6 @@
 #include <memory>
 
 #include "runtime/mem_pool.h"
-#include "runtime/mem_tracker.h"
 #include "storage/rowset/segment_v2/options.h"
 #include "storage/rowset/segment_v2/page_builder.h"
 #include "storage/rowset/segment_v2/page_decoder.h"
@@ -42,8 +41,7 @@ class FrameOfReferencePageTest : public testing::Test {
 public:
     template <FieldType type, class PageDecoderType>
     void copy_one(PageDecoderType* decoder, typename TypeTraits<type>::CppType* ret) {
-        auto tracker = std::make_shared<MemTracker>();
-        MemPool pool(tracker.get());
+        MemPool pool;
         std::unique_ptr<ColumnVectorBatch> cvb;
         ColumnVectorBatch::create(1, true, get_type_info(type), nullptr, &cvb);
         ColumnBlock block(cvb.get(), &pool);
@@ -75,8 +73,7 @@ public:
         ASSERT_EQ(0, for_page_decoder.current_index());
         ASSERT_EQ(size, for_page_decoder.count());
 
-        auto tracker = std::make_shared<MemTracker>();
-        MemPool pool(tracker.get());
+        MemPool pool;
         std::unique_ptr<ColumnVectorBatch> cvb;
         ColumnVectorBatch::create(size, true, get_type_info(Type), nullptr, &cvb);
         ColumnBlock block(cvb.get(), &pool);

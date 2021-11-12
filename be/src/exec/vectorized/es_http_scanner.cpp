@@ -8,7 +8,6 @@
 
 #include "exec/exec_node.h"
 #include "exprs/expr.h"
-#include "runtime/mem_tracker.h"
 #include "runtime/runtime_state.h"
 
 namespace starrocks::vectorized {
@@ -24,8 +23,6 @@ EsHttpScanner::EsHttpScanner(RuntimeState* state, RuntimeProfile* profile, Tuple
           _next_range(0),
           _line_eof(true),
           _batch_eof(false),
-          _mem_tracker(new MemTracker(-1, "EsHttp FileScanner", state->instance_mem_tracker())),
-          _mem_pool(_state->instance_mem_tracker()),
           _tuple_desc(nullptr),
           _es_reader(nullptr),
           _es_scroll_parser(nullptr),

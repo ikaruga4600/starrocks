@@ -2,6 +2,8 @@
 
 #include "exec/vectorized/file_scanner.h"
 
+#include <memory>
+
 #include "column/column_helper.h"
 #include "column/hash_set.h"
 #include "env/compressed_file.h"
@@ -13,7 +15,6 @@
 #include "gutil/strings/substitute.h"
 #include "runtime/descriptors.h"
 #include "runtime/exec_env.h"
-#include "runtime/mem_tracker.h"
 #include "runtime/runtime_state.h"
 #include "runtime/stream_load/load_stream_mgr.h"
 
@@ -27,15 +28,8 @@ FileScanner::FileScanner(starrocks::RuntimeState* state, starrocks::RuntimeProfi
           _params(params),
           _counter(counter),
           _row_desc(nullptr),
-#if BE_TEST
-          _mem_tracker(new MemTracker()),
-#else
-          _mem_tracker(new MemTracker(-1, "Broker FileScanner", state->instance_mem_tracker())),
-//          _mem_pool(_state->instance_mem_tracker()),
-#endif
           _strict_mode(false),
-          _error_counter(0) {
-}
+          _error_counter(0) {}
 
 FileScanner::~FileScanner() {
     Expr::close(_dest_expr_ctx, _state);
@@ -90,7 +84,7 @@ Status FileScanner::init_expr_ctx() {
 
         ExprContext* ctx = nullptr;
         RETURN_IF_ERROR(Expr::create_expr_tree(_state->obj_pool(), it->second, &ctx));
-        RETURN_IF_ERROR(ctx->prepare(_state, *_row_desc.get(), _mem_tracker.get()));
+        RETURN_IF_ERROR(ctx->prepare(_state, *_row_desc.get()));
         RETURN_IF_ERROR(ctx->open(_state));
 
         _dest_expr_ctx.emplace_back(ctx);
@@ -277,9 +271,9 @@ Status FileScanner::create_sequential_file(const TBrokerRangeDesc& range_desc, c
     }
 
     using DecompressorPtr = std::shared_ptr<Decompressor>;
-    Decompressor* dec = nullptr;
+    std::unique_ptr<Decompressor> dec;
     RETURN_IF_ERROR(Decompressor::create_decompressor(compression, &dec));
-    *file = std::make_shared<CompressedSequentialFile>(std::move(src_file), DecompressorPtr(dec));
+    *file = std::make_shared<CompressedSequentialFile>(std::move(src_file), DecompressorPtr(dec.release()));
     return Status::OK();
 }
 

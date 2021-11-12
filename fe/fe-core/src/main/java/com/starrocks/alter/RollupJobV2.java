@@ -318,7 +318,7 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
             partition.createRollupIndex(rollupIndex);
         }
 
-        tbl.setIndexMeta(rollupIndexId, rollupIndexName, rollupSchema, 0 /* init schema version */,
+        tbl.setIndexMeta(rollupIndexId, rollupIndexName, rollupSchema, 0 /* initial schema version */,
                 rollupSchemaHash, rollupShortKeyColumnCount, TStorageType.COLUMN, rollupKeysType, origStmt);
         tbl.rebuildFullSchema();
     }
@@ -708,6 +708,7 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
         info.add(baseIndexName);
         info.add(rollupIndexName);
         info.add(rollupIndexId);
+        info.add(Integer.toString(rollupSchemaHash));
         info.add(watershedTxnId);
         info.add(jobState.name());
         info.add(errMsg);
@@ -835,6 +836,7 @@ public class RollupJobV2 extends AlterJobV2 implements GsonPostProcessable {
         CreateMaterializedViewStmt stmt = null;
         try {
             stmt = (CreateMaterializedViewStmt) SqlParserUtils.getStmt(parser, origStmt.idx);
+            stmt.setIsReplay(true);
             stmt.analyze(analyzer);
         } catch (Exception e) {
             // Under normal circumstances, the stmt will not fail to analyze.

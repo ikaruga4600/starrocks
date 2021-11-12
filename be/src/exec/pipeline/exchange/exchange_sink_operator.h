@@ -9,6 +9,7 @@
 #include "common/object_pool.h"
 #include "common/status.h"
 #include "exec/data_sink.h"
+#include "exec/pipeline/exchange/sink_buffer.h"
 #include "exec/pipeline/operator.h"
 #include "gen_cpp/data.pb.h"
 #include "gen_cpp/internal_service.pb.h"
@@ -54,7 +55,7 @@ public:
     // For other chunk, only serialize the chunk data to ChunkPB.
     Status serialize_chunk(const vectorized::Chunk* chunk, ChunkPB* dst, bool* is_first_chunk, int num_receivers = 1);
 
-    void construct_brpc_attachment(PTransmitChunkParams* _chunk_request, butil::IOBuf* attachment);
+    void construct_brpc_attachment(PTransmitChunkParamsPtr _chunk_request, butil::IOBuf& attachment);
 
     RuntimeProfile* profile() { return _profile; }
 
@@ -77,11 +78,13 @@ private:
     PlanNodeId _dest_node_id;
 
     std::vector<std::shared_ptr<Channel>> _channels;
+    // Index of current channel to send to if _part_type == RANDOM.
+    int _curr_random_channel_idx = 0;
 
     // Only used when broadcast
-    PTransmitChunkParams _chunk_request;
+    PTransmitChunkParamsPtr _chunk_request;
     size_t _current_request_bytes = 0;
-    size_t _request_bytes_threshold = 0;
+    size_t _request_bytes_threshold = config::max_transmit_batched_bytes;
 
     bool _is_first_chunk = true;
 
@@ -135,20 +138,13 @@ public:
     ExchangeSinkOperatorFactory(int32_t id, int32_t plan_node_id, std::shared_ptr<SinkBuffer> buffer,
                                 TPartitionType::type part_type,
                                 const std::vector<TPlanFragmentDestination>& destinations, int sender_id,
-                                PlanNodeId dest_node_id, std::vector<ExprContext*> partition_expr_ctxs)
-            : OperatorFactory(id, "exchange_sink", plan_node_id),
-              _buffer(std::move(buffer)),
-              _part_type(part_type),
-              _destinations(destinations),
-              _sender_id(sender_id),
-              _dest_node_id(dest_node_id),
-              _partition_expr_ctxs(std::move(partition_expr_ctxs)) {}
+                                PlanNodeId dest_node_id, std::vector<ExprContext*> partition_expr_ctxs);
 
     ~ExchangeSinkOperatorFactory() override = default;
 
     OperatorPtr create(int32_t degree_of_parallelism, int32_t driver_sequence) override;
 
-    Status prepare(RuntimeState* state, MemTracker* mem_tracker) override;
+    Status prepare(RuntimeState* state) override;
 
     void close(RuntimeState* state) override;
 

@@ -22,6 +22,7 @@
 #include "runtime/runtime_state.h"
 
 #include <boost/algorithm/string/join.hpp>
+#include <cstring>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -31,7 +32,6 @@
 #include "common/object_pool.h"
 #include "common/status.h"
 #include "exec/exec_node.h"
-#include "exprs/vectorized/runtime_filter_bank.h"
 #include "runtime/descriptors.h"
 #include "runtime/exec_env.h"
 #include "runtime/load_path_mgr.h"
@@ -47,44 +47,38 @@ namespace starrocks {
 // for ut only
 RuntimeState::RuntimeState(const TUniqueId& fragment_instance_id, const TQueryOptions& query_options,
                            const TQueryGlobals& query_globals, ExecEnv* exec_env)
-        : _profile("Fragment " + print_id(fragment_instance_id)),
-          _unreported_error_idx(0),
+        : _unreported_error_idx(0),
           _obj_pool(new ObjectPool()),
           _is_cancelled(false),
           _per_fragment_instance_idx(0),
-
           _num_rows_load_total(0),
           _num_rows_load_filtered(0),
           _num_rows_load_unselected(0),
           _num_print_error_rows(0) {
+    _profile = std::make_shared<RuntimeProfile>("Fragment " + print_id(fragment_instance_id));
     Status status = init(fragment_instance_id, query_options, query_globals, exec_env);
     DCHECK(status.ok());
 }
 
 RuntimeState::RuntimeState(const TUniqueId& query_id, const TUniqueId& fragment_instance_id,
                            const TQueryOptions& query_options, const TQueryGlobals& query_globals, ExecEnv* exec_env)
-        : _profile("Fragment " + print_id(fragment_instance_id)),
-          _unreported_error_idx(0),
+        : _unreported_error_idx(0),
           _query_id(query_id),
           _obj_pool(new ObjectPool()),
           _is_cancelled(false),
           _per_fragment_instance_idx(0),
-
           _num_rows_load_total(0),
           _num_rows_load_filtered(0),
           _num_rows_load_unselected(0),
-
           _num_print_error_rows(0) {
+    _profile = std::make_shared<RuntimeProfile>("Fragment " + print_id(fragment_instance_id));
     Status status = init(fragment_instance_id, query_options, query_globals, exec_env);
     DCHECK(status.ok());
 }
 
 RuntimeState::RuntimeState(const TQueryGlobals& query_globals)
-        : _profile("<unnamed>"),
-          _unreported_error_idx(0),
-          _obj_pool(new ObjectPool()),
-          _is_cancelled(false),
-          _per_fragment_instance_idx(0) {
+        : _unreported_error_idx(0), _obj_pool(new ObjectPool()), _is_cancelled(false), _per_fragment_instance_idx(0) {
+    _profile = std::make_shared<RuntimeProfile>("<unnamed>");
     _query_options.batch_size = DEFAULT_BATCH_SIZE;
     if (query_globals.__isset.time_zone) {
         _timezone = query_globals.time_zone;
@@ -119,20 +113,6 @@ RuntimeState::~RuntimeState() {
     if (_exec_env != nullptr && _exec_env->thread_mgr() != nullptr) {
         _exec_env->thread_mgr()->unregister_pool(_resource_pool);
     }
-
-#ifndef BE_TEST
-    // LogUsage() walks the MemTracker tree top-down when the memory limit is exceeded.
-    // Break the link between the instance_mem_tracker and its parent (_query_mem_tracker)
-    // before the _instance_mem_tracker and its children are destroyed.
-    if (_instance_mem_tracker != nullptr) {
-        // May be NULL if InitMemTrackers() is not called, for example from tests.
-        _instance_mem_tracker->close();
-    }
-
-    if (_query_mem_tracker != nullptr) {
-        _query_mem_tracker->close();
-    }
-#endif
 }
 
 Status RuntimeState::init(const TUniqueId& fragment_instance_id, const TQueryOptions& query_options,
@@ -183,22 +163,22 @@ Status RuntimeState::init(const TUniqueId& fragment_instance_id, const TQueryOpt
     return Status::OK();
 }
 
-Status RuntimeState::init_mem_trackers(const TUniqueId& query_id) {
+void RuntimeState::init_mem_trackers(const TUniqueId& query_id) {
     bool has_query_mem_tracker = _query_options.__isset.mem_limit && (_query_options.mem_limit > 0);
     int64_t bytes_limit = has_query_mem_tracker ? _query_options.mem_limit : -1;
-    auto* mem_tracker_counter = ADD_COUNTER(&_profile, "MemoryLimit", TUnit::BYTES);
+    auto* mem_tracker_counter = ADD_COUNTER(_profile.get(), "MemoryLimit", TUnit::BYTES);
     mem_tracker_counter->set(bytes_limit);
 
-    _query_mem_tracker = std::make_unique<MemTracker>(MemTracker::QUERY, bytes_limit, runtime_profile()->name(),
+    _query_mem_tracker = std::make_shared<MemTracker>(MemTracker::QUERY, bytes_limit, runtime_profile()->name(),
                                                       _exec_env->query_pool_mem_tracker());
     _instance_mem_tracker =
-            std::make_unique<MemTracker>(&_profile, -1, runtime_profile()->name(), _query_mem_tracker.get());
-
-    return Status::OK();
+            std::make_shared<MemTracker>(_profile.get(), -1, runtime_profile()->name(), _query_mem_tracker.get());
+    _instance_mem_pool = std::make_unique<MemPool>();
 }
 
 Status RuntimeState::init_instance_mem_tracker() {
     _instance_mem_tracker = std::make_unique<MemTracker>(-1);
+    _instance_mem_pool = std::make_unique<MemPool>();
     return Status::OK();
 }
 
@@ -268,11 +248,15 @@ Status RuntimeState::set_mem_limit_exceeded(MemTracker* tracker, int64_t failed_
 Status RuntimeState::check_query_state(const std::string& msg) {
     // TODO: it would be nice if this also checked for cancellation, but doing so breaks
     // cases where we use Status::Cancelled("Cancelled") to indicate that the limit was reached.
+    return query_status();
+}
+
+Status RuntimeState::check_mem_limit(const std::string& msg) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnonnull-compare"
     RETURN_IF_LIMIT_EXCEEDED(this, msg);
 #pragma pop
-    return query_status();
+    return Status::OK();
 }
 
 const int64_t MAX_ERROR_NUM = 50;
@@ -358,6 +342,10 @@ const vectorized::GlobalDictMaps& RuntimeState::get_global_dict_map() const {
     return _global_dicts;
 }
 
+vectorized::GlobalDictMaps* RuntimeState::mutable_global_dict_map() {
+    return &_global_dicts;
+}
+
 Status RuntimeState::init_global_dict(const GlobalDictLists& global_dict_list) {
     for (const auto& global_dict : global_dict_list) {
         DCHECK_EQ(global_dict.ids.size(), global_dict.strings.size());
@@ -365,8 +353,10 @@ Status RuntimeState::init_global_dict(const GlobalDictLists& global_dict_list) {
         vectorized::RGlobalDictMap rdict_map;
         int dict_sz = global_dict.ids.size();
         for (int i = 0; i < dict_sz; ++i) {
-            auto str = _obj_pool->add(new std::string(global_dict.strings[i]));
-            Slice slice(str->data(), str->size());
+            const std::string& dict_key = global_dict.strings[i];
+            auto* data = _instance_mem_pool->allocate(dict_key.size());
+            memcpy(data, dict_key.data(), dict_key.size());
+            Slice slice(data, dict_key.size());
             dict_map.emplace(slice, global_dict.ids[i]);
             rdict_map.emplace(global_dict.ids[i], slice);
         }

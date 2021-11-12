@@ -23,25 +23,15 @@ public class PhysicalDistributionOperator extends PhysicalOperator {
         this.distributionSpec = spec;
     }
 
-    private final List<Pair<Integer, ColumnDict>> globalDicts = Lists.newArrayList();
+    private List<Pair<Integer, ColumnDict>> globalDicts = Lists.newArrayList();
 
     public List<Pair<Integer, ColumnDict>> getGlobalDicts() {
         return globalDicts;
     }
 
-    public void addGlobalDictColumns(Pair<Integer, ColumnDict> dict) {
-        globalDicts.add(dict);
-    }
-
-
-    @Override
-    public boolean equals(Object obj) {
-        return this == obj;
-    }
-
-    @Override
-    public int hashCode() {
-        return this.distributionSpec.hashCode();
+    public void setGlobalDicts(
+            List<Pair<Integer, ColumnDict>> globalDicts) {
+        this.globalDicts = globalDicts;
     }
 
     @Override

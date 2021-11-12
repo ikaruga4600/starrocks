@@ -14,6 +14,7 @@ import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
+import com.starrocks.external.ObejctStorageUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileStatus;
@@ -56,6 +57,7 @@ public class HiveMetaClient {
     public static final String PARTITION_NULL_VALUE = "__HIVE_DEFAULT_PARTITION__";
     // Maximum number of idle metastore connections in the connection pool at any point.
     private static final int MAX_HMS_CONNECTION_POOL_SIZE = 32;
+
     private final LinkedList<AutoCloseClient> clientPool = new LinkedList<>();
     private final Object clientPoolLock = new Object();
 
@@ -87,7 +89,6 @@ public class HiveMetaClient {
         private final IMetaStoreClient hiveClient;
 
         private AutoCloseClient(HiveConf conf) throws MetaException {
-            System.out.println("new AutoCloseClient called");
             hiveClient = RetryingMetaStoreClient.getProxy(conf, dummyHookLoader,
                     HiveMetaStoreThriftClient.class.getName());
         }
@@ -131,6 +132,7 @@ public class HiveMetaClient {
         try (AutoCloseClient client = getClient()) {
             return client.hiveClient.getTable(dbName, tableName);
         } catch (Exception e) {
+            LOG.warn("get hive table failed", e);
             throw new DdlException("get hive table from meta store failed: " + e.getMessage());
         }
     }
@@ -155,6 +157,7 @@ public class HiveMetaClient {
                 return partitionKeys;
             }
         } catch (Exception e) {
+            LOG.warn("get partition keys failed", e);
             throw new DdlException("get hive partition keys from meta store failed: " + e.getMessage());
         }
     }
@@ -163,6 +166,7 @@ public class HiveMetaClient {
         try (AutoCloseClient client = getClient()) {
             return client.hiveClient.partitionNameToVals(partName);
         } catch (Exception e) {
+            LOG.warn("convert partitionName to vals failed", e);
             throw new DdlException("convert partition name to vals failed: " + e.getMessage());
         }
     }
@@ -182,8 +186,10 @@ public class HiveMetaClient {
                 throw new DdlException("unsupported file format [" + sd.getInputFormat() + "]");
             }
 
-            List<HdfsFileDesc> fileDescs = getHdfsFileDescs(sd.getLocation());
-            return new HivePartition(format, ImmutableList.copyOf(fileDescs), sd.getLocation());
+            String path = ObejctStorageUtils.formatObjectStoragePath(sd.getLocation());
+            List<HdfsFileDesc> fileDescs = getHdfsFileDescs(path,
+                    ObejctStorageUtils.isObjectStorage(path) || HdfsFileFormat.isSplittable(sd.getInputFormat()));
+            return new HivePartition(format, ImmutableList.copyOf(fileDescs), path);
         } catch (NoSuchObjectException e) {
             throw new DdlException("get hive partition meta data failed: "
                     + "partition not exists, partValues: "
@@ -200,6 +206,7 @@ public class HiveMetaClient {
             Map<String, String> parameters = table.getParameters();
             return new HiveTableStats(Utils.getRowCount(parameters), Utils.getTotalSize(parameters));
         } catch (Exception e) {
+            LOG.warn("get table stats failed", e);
             throw new DdlException("get hive table stats from meta store failed: " + e.getMessage());
         }
     }
@@ -217,6 +224,7 @@ public class HiveMetaClient {
             }
             return new HivePartitionStats(Utils.getRowCount(parameters));
         } catch (Exception e) {
+            LOG.warn("get partition stats failed", e);
             throw new DdlException("get hive partition stats from hive metastore failed: " + e.getMessage());
         }
     }
@@ -244,6 +252,7 @@ public class HiveMetaClient {
             }
             return statsMap;
         } catch (Exception e) {
+            LOG.warn("get table level column stats for unpartition table failed", e);
             throw new DdlException("get table column statistics from hive metastore failed: " + e.getMessage());
         }
     }
@@ -269,6 +278,7 @@ public class HiveMetaClient {
         try (AutoCloseClient client = getClient()) {
             partitions = client.hiveClient.getPartitionsByNames(dbName, tableName, partNames);
         } catch (Exception e) {
+            LOG.warn("get table level column stats for partition table failed", e);
             throw new DdlException("get partitions from hive metastore failed: " + e.getMessage());
         }
         for (Partition partition : partitions) {
@@ -442,7 +452,7 @@ public class HiveMetaClient {
         }
     }
 
-    private List<HdfsFileDesc> getHdfsFileDescs(String dirPath) throws Exception {
+    private List<HdfsFileDesc> getHdfsFileDescs(String dirPath, boolean isSplittable) throws Exception {
         URI uri = new URI(dirPath);
         FileSystem fileSystem = getFileSystem(uri);
         List<HdfsFileDesc> fileDescs = Lists.newArrayList();
@@ -460,7 +470,7 @@ public class HiveMetaClient {
                 BlockLocation[] blockLocations = locatedFileStatus.getBlockLocations();
                 List<HdfsFileBlockDesc> fileBlockDescs = getHdfsFileBlockDescs(blockLocations);
                 fileDescs.add(new HdfsFileDesc(fileName, "", locatedFileStatus.getLen(),
-                        ImmutableList.copyOf(fileBlockDescs)));
+                        ImmutableList.copyOf(fileBlockDescs), isSplittable));
             }
         } catch (FileNotFoundException ignored) {
             // hive empty partition may not create directory
@@ -481,22 +491,33 @@ public class HiveMetaClient {
     private List<HdfsFileBlockDesc> getHdfsFileBlockDescs(BlockLocation[] blockLocations) throws IOException {
         List<HdfsFileBlockDesc> fileBlockDescs = Lists.newArrayList();
         for (BlockLocation blockLocation : blockLocations) {
-            String[] hostNames = blockLocation.getNames();
-            long[] replicaHostIds = new long[hostNames.length];
-            for (int j = 0; j < hostNames.length; j++) {
-                String name = hostNames[j];
-                replicaHostIds[j] = getHostId(name);
-            }
-            fileBlockDescs.add(new HdfsFileBlockDesc(blockLocation.getOffset(),
+            fileBlockDescs.add(buildHdfsFileBlockDesc(
+                    blockLocation.getOffset(),
                     blockLocation.getLength(),
-                    replicaHostIds,
-                    // TODO get storageId through blockStorageLocation.getVolumeIds()
-                    // because this function is a rpc call, we give a fake value now.
-                    // Set it to real value, when planner needs this param.
-                    new long[] {UNKNOWN_STORAGE_ID},
-                    this));
+                    getReplicaHostIds(blockLocation.getNames()))
+            );
         }
         return fileBlockDescs;
+    }
+
+    private long[] getReplicaHostIds(String[] hostNames) {
+        long[] replicaHostIds = new long[hostNames.length];
+        for (int j = 0; j < hostNames.length; j++) {
+            String name = hostNames[j];
+            replicaHostIds[j] = getHostId(name);
+        }
+        return replicaHostIds;
+    }
+
+    private HdfsFileBlockDesc buildHdfsFileBlockDesc(long offset, long length, long[] replicaHostIds) {
+        return new HdfsFileBlockDesc(offset,
+                length,
+                replicaHostIds,
+                // TODO get storageId through blockStorageLocation.getVolumeIds()
+                // because this function is a rpc call, we give a fake value now.
+                // Set it to real value, when planner needs this param.
+                new long[] {UNKNOWN_STORAGE_ID},
+                this);
     }
 
     private FileSystem getFileSystem(URI uri) throws IOException {

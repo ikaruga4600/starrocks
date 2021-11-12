@@ -40,12 +40,15 @@ public:
 
     // =================================
     // create and fill runtime IN filter
-    static ExprContext* create_runtime_in_filter(RuntimeState* state, ObjectPool* pool, Expr* probe_expr, bool eq_null);
-    static Status fill_runtime_in_filter(const ColumnPtr& column, Expr* probe_expr, ExprContext* filter);
+    static ExprContext* create_runtime_in_filter(RuntimeState* state, ObjectPool* pool, Expr* probe_expr, bool eq_null,
+                                                 bool null_in_set = false, bool is_not_in = false);
+    static Status fill_runtime_in_filter(const ColumnPtr& column, Expr* probe_expr, ExprContext* filter,
+                                         size_t column_offset);
 
     // ====================================
     static JoinRuntimeFilter* create_runtime_bloom_filter(ObjectPool* pool, PrimitiveType type);
-    static Status fill_runtime_bloom_filter(const ColumnPtr& column, PrimitiveType type, JoinRuntimeFilter* filter);
+    static Status fill_runtime_bloom_filter(const ColumnPtr& column, PrimitiveType type, JoinRuntimeFilter* filter,
+                                            size_t column_offset);
 };
 
 // how to generate & publish this runtime filter
@@ -68,6 +71,7 @@ public:
 
 private:
     friend class HashJoinNode;
+    friend class HashJoiner;
     int32_t _filter_id;
 
     ExprContext* _build_expr_ctx = nullptr;
@@ -84,7 +88,7 @@ class RuntimeFilterProbeDescriptor {
 public:
     RuntimeFilterProbeDescriptor() = default;
     Status init(ObjectPool* pool, const TRuntimeFilterDescription& desc, TPlanNodeId node_id);
-    Status prepare(RuntimeState* state, const RowDescriptor& row_desc, MemTracker* tracker, RuntimeProfile* p);
+    Status prepare(RuntimeState* state, const RowDescriptor& row_desc, RuntimeProfile* p);
     Status open(RuntimeState* state);
     void close(RuntimeState* state);
     int32_t filter_id() const { return _filter_id; }
@@ -101,13 +105,13 @@ public:
         return true;
     }
     PrimitiveType probe_expr_type() const { return _probe_expr_ctx->root()->type().type; }
-    void replace_probe_expr_ctx(RuntimeState* state, const RowDescriptor& row_desc, MemTracker* tracker,
-                                ExprContext* new_probe_expr_ctx);
+    void replace_probe_expr_ctx(RuntimeState* state, const RowDescriptor& row_desc, ExprContext* new_probe_expr_ctx);
     std::string debug_string() const;
     JoinRuntimeFilter::RunningContext* runtime_filter_ctx() { return &_runtime_filter_ctx; }
 
 private:
     friend class HashJoinNode;
+    friend class hashJoiner;
     int32_t _filter_id;
     ExprContext* _probe_expr_ctx = nullptr;
     std::atomic<const JoinRuntimeFilter*> _runtime_filter;
@@ -125,7 +129,7 @@ public:
     RuntimeFilterProbeCollector();
     RuntimeFilterProbeCollector(RuntimeFilterProbeCollector&& that) noexcept;
     size_t size() const { return _descriptors.size(); }
-    Status prepare(RuntimeState* state, const RowDescriptor& row_desc, MemTracker* tracker, RuntimeProfile* p);
+    Status prepare(RuntimeState* state, const RowDescriptor& row_desc, RuntimeProfile* p);
     Status open(RuntimeState* state);
     void close(RuntimeState* state);
     void evaluate(vectorized::Chunk* chunk);

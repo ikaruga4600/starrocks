@@ -117,6 +117,7 @@ set(EXEC_FILES
         ./storage/file_utils_test.cpp
         ./storage/fs/file_block_manager_test.cpp
         ./storage/generic_iterators_test.cpp
+        ./storage/tablet_schema_map_test.cpp
         ./storage/hll_test.cpp
         ./storage/in_list_predicate_test.cpp
         ./storage/key_coder_test.cpp
@@ -169,11 +170,13 @@ set(EXEC_FILES
         ./storage/vectorized/projection_iterator_test.cpp
         ./storage/vectorized/push_handler_test.cpp
         ./storage/vectorized/range_test.cpp
+        ./storage/vectorized/row_source_mask_test.cpp
         ./storage/vectorized/union_iterator_test.cpp
         ./storage/vectorized/unique_iterator_test.cpp
         ./storage/vectorized/cumulative_compaction_test.cpp
         ./storage/vectorized/base_compaction_test.cpp
         ./storage/vectorized/rowset_merger_test.cpp
+        ./storage/vectorized/schema_change_test.cpp
         ./plugin/plugin_mgr_test.cpp
         ./runtime/buffer_control_block_test.cpp
         ./runtime/datetime_value_test.cpp
@@ -201,6 +204,8 @@ set(EXEC_FILES
         ./runtime/type_descriptor_test.cpp
         ./runtime/vectorized/sorted_chunks_merger_test.cpp
         ./simd/simd_test.cpp
+        ./simd/simd_selector_test.cpp
+        ./simd/simd_mulselector_test.cpp
         ./util/aes_util_test.cpp
         ./util/arrow/arrow_row_batch_test.cpp
         ./util/arrow/arrow_row_block_test.cpp
@@ -267,6 +272,7 @@ SET_TARGET_PROPERTIES(${PLUGIN_FILE_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$
 # Thus we need a standalone binary without sanitizer to test it.
 add_executable(bytes_test
         ./column/bytes_test.cpp
+        ../src/service/mem_hook.cpp
         )
 
 set_target_properties(bytes_test PROPERTIES

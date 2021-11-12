@@ -305,6 +305,11 @@ CONF_mInt32(base_compaction_trace_threshold, "120");
 CONF_mInt32(cumulative_compaction_trace_threshold, "60");
 CONF_mInt32(update_compaction_trace_threshold, "20");
 
+// Max row source mask memory bytes, default is 200M.
+// Should be smaller than compaction_mem_limit.
+// When the row source mask buffer exceeds this, it will be persisted to a temporary file on the disk.
+CONF_Int64(max_row_source_mask_memory_bytes, "209715200");
+
 // Port to start debug webserver on
 CONF_Int32(webserver_port, "8040");
 // Number of webserver workers
@@ -586,6 +591,13 @@ CONF_Bool(bitmap_filter_enable_not_equal, "false");
 // storage format.
 CONF_mInt16(storage_format_version, "2");
 
+// IMPORTANT NOTE: changing this config to 1 must require all BEs to be upgraded to new version,
+// which support this config.
+// DO NOT change this config unless you known how.
+// 0 for BITSHUFFLE_NULL
+// 1 for LZ4_NULL
+CONF_mInt16(null_encoding, "0");
+
 // do pre-aggregate if effect great than the factor, factor range:[1-100].
 CONF_Int16(pre_aggregate_factor, "80");
 
@@ -626,10 +638,12 @@ CONF_Int64(pipeline_io_thread_pool_thread_num, "3");
 CONF_Int64(pipeline_io_thread_pool_queue_size, "102400");
 // the number of execution threads for pipeline engine.
 CONF_Int64(pipeline_exec_thread_pool_thread_num, "3");
+// the buffer size of io task
+CONF_Int64(pipeline_io_buffer_size, "64");
 // bitmap serialize version
 CONF_Int16(bitmap_serialize_version, "1");
 // schema change vectorized
-CONF_Bool(enable_schema_change_vectorized, "false");
+CONF_Bool(enable_schema_change_vectorized, "true");
 
 } // namespace config
 

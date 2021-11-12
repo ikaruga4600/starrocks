@@ -2,18 +2,30 @@
 
 #include "exec/vectorized/project_node.h"
 
+#include <algorithm>
+#include <cstring>
 #include <memory>
+#include <set>
+#include <vector>
 
+#include "column/binary_column.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"
+#include "column/column_viewer.h"
 #include "column/nullable_column.h"
 #include "column/vectorized_fwd.h"
+#include "common/global_types.h"
 #include "exec/pipeline/limit_operator.h"
 #include "exec/pipeline/pipeline_builder.h"
 #include "exec/pipeline/project_operator.h"
 #include "exprs/expr.h"
+#include "exprs/expr_context.h"
 #include "exprs/vectorized/column_ref.h"
 #include "exprs/vectorized/runtime_filter.h"
+#include "fmt/compile.h"
+#include "glog/logging.h"
+#include "gutil/casts.h"
+#include "runtime/primitive_type.h"
 #include "runtime/runtime_state.h"
 
 namespace starrocks::vectorized {
@@ -62,11 +74,22 @@ Status ProjectNode::prepare(RuntimeState* state) {
     SCOPED_TIMER(_runtime_profile->total_time_counter());
     RETURN_IF_ERROR(ExecNode::prepare(state));
 
-    RETURN_IF_ERROR(Expr::prepare(_expr_ctxs, state, row_desc(), expr_mem_tracker()));
-    RETURN_IF_ERROR(Expr::prepare(_common_sub_expr_ctxs, state, row_desc(), expr_mem_tracker()));
+    RETURN_IF_ERROR(Expr::prepare(_expr_ctxs, state, row_desc()));
+    RETURN_IF_ERROR(Expr::prepare(_common_sub_expr_ctxs, state, row_desc()));
 
     _expr_compute_timer = ADD_TIMER(runtime_profile(), "ExprComputeTime");
     _common_sub_expr_compute_timer = ADD_TIMER(runtime_profile(), "CommonSubExprComputeTime");
+
+    GlobalDictMaps* mdict_maps = state->mutable_global_dict_map();
+    _dict_optimize_parser.set_mutable_dict_maps(mdict_maps);
+
+    auto init_dict_optimize = [&](std::vector<ExprContext*>& expr_ctxs, std::vector<SlotId>& target_slots) {
+        _dict_optimize_parser.rewrite_exprs(&expr_ctxs, state, target_slots);
+    };
+
+    init_dict_optimize(_common_sub_expr_ctxs, _common_sub_slot_ids);
+    init_dict_optimize(_expr_ctxs, _slot_ids);
+
     return Status::OK();
 }
 
@@ -174,6 +197,7 @@ Status ProjectNode::close(RuntimeState* state) {
 
     Expr::close(_expr_ctxs, state);
     Expr::close(_common_sub_expr_ctxs, state);
+    _dict_optimize_parser.close(state);
     RETURN_IF_ERROR(ExecNode::close(state));
     return Status::OK();
 }
@@ -227,7 +251,7 @@ void ProjectNode::push_down_join_runtime_filter(RuntimeState* state,
             if (_slot_ids[i] == slot_id) {
                 // replace with new probe expr
                 ExprContext* new_probe_expr_ctx = _expr_ctxs[i];
-                rf_desc->replace_probe_expr_ctx(state, row_desc(), expr_mem_tracker(), new_probe_expr_ctx);
+                rf_desc->replace_probe_expr_ctx(state, row_desc(), new_probe_expr_ctx);
                 match = true;
                 break;
             }

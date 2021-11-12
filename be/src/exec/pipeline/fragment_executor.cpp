@@ -26,6 +26,20 @@
 
 namespace starrocks::pipeline {
 
+static void setup_profile_hierarchy(RuntimeState* runtime_state, const DriverPtr& driver) {
+    runtime_state->runtime_profile()->add_child(driver->runtime_profile(), true, nullptr);
+    auto& operators = driver->operators();
+    for (int32_t j = operators.size() - 1; j >= 0; --j) {
+        auto& curr_op = operators[j];
+        if (j == operators.size() - 1) {
+            driver->runtime_profile()->add_child(curr_op->get_runtime_profile(), true, nullptr);
+        } else {
+            auto& prev_op = operators[j + 1];
+            prev_op->get_runtime_profile()->add_child(curr_op->get_runtime_profile(), true, nullptr);
+        }
+    }
+}
+
 Morsels convert_scan_range_to_morsel(const std::vector<TScanRangeParams>& scan_ranges, int node_id) {
     Morsels morsels;
     for (const auto& scan_range : scan_ranges) {
@@ -66,6 +80,8 @@ Status FragmentExecutor::prepare(ExecEnv* exec_env, const TExecPlanFragmentParam
     } else {
         _query_ctx->set_expire_seconds(300);
     }
+    // initialize query's deadline
+    _query_ctx->extend_lifetime();
 
     _fragment_ctx = _query_ctx->fragment_mgr()->get_or_register(fragment_instance_id);
     _fragment_ctx->set_query_id(query_id);
@@ -79,16 +95,9 @@ Status FragmentExecutor::prepare(ExecEnv* exec_env, const TExecPlanFragmentParam
             std::make_unique<RuntimeState>(query_id, fragment_instance_id, query_options, query_globals, exec_env));
     auto* runtime_state = _fragment_ctx->runtime_state();
 
-    int64_t bytes_limit = query_options.mem_limit;
-    // NOTE: this MemTracker only for olap
-    _fragment_ctx->set_mem_tracker(
-            std::make_unique<MemTracker>(bytes_limit, "fragment mem-limit", exec_env->query_pool_mem_tracker(), true));
-
     runtime_state->set_batch_size(config::vector_chunk_size);
-    RETURN_IF_ERROR(runtime_state->init_mem_trackers(query_id));
+    runtime_state->init_mem_trackers(query_id);
     runtime_state->set_be_number(backend_num);
-
-    LOG(INFO) << "Using query memory limit: " << PrettyPrinter::print(bytes_limit, TUnit::BYTES);
 
     // Set up desc tbl
     auto* obj_pool = runtime_state->obj_pool();
@@ -101,6 +110,11 @@ Status FragmentExecutor::prepare(ExecEnv* exec_env, const TExecPlanFragmentParam
     runtime_state->set_fragment_root_id(plan->id());
     _fragment_ctx->set_plan(plan);
 
+    // Set up global dict
+    if (request.fragment.__isset.global_dicts) {
+        RETURN_IF_ERROR(runtime_state->init_global_dict(request.fragment.global_dicts));
+    }
+
     // Set senders of exchange nodes before pipeline build
     std::vector<ExecNode*> exch_nodes;
     plan->collect_nodes(TPlanNodeType::EXCHANGE_NODE, &exch_nodes);
@@ -110,16 +124,11 @@ Status FragmentExecutor::prepare(ExecEnv* exec_env, const TExecPlanFragmentParam
     }
 
     int32_t degree_of_parallelism = 1;
-    if (query_options.__isset.query_threads) {
-        degree_of_parallelism = std::max<int32_t>(query_options.query_threads, degree_of_parallelism);
-    }
-
-    // pipeline scan mode
-    // 0: use sync io
-    // 1: use async io and exec->thread_pool()
-    int32_t pipeline_scan_mode = 1;
-    if (query_options.__isset.pipeline_scan_mode) {
-        pipeline_scan_mode = query_options.pipeline_scan_mode;
+    if (query_options.__isset.pipeline_dop && query_options.pipeline_dop > 0) {
+        degree_of_parallelism = query_options.pipeline_dop;
+    } else {
+        // default dop is a half of the number of hardware threads.
+        degree_of_parallelism = std::max<int32_t>(1, std::thread::hardware_concurrency() / 2);
     }
 
     // set scan ranges
@@ -156,10 +165,13 @@ Status FragmentExecutor::prepare(ExecEnv* exec_env, const TExecPlanFragmentParam
     Drivers drivers;
     const auto& pipelines = _fragment_ctx->pipelines();
     const size_t num_pipelines = pipelines.size();
+    size_t driver_id = 0;
     for (auto n = 0; n < num_pipelines; ++n) {
         const auto& pipeline = pipelines[n];
         // DOP(degree of parallelism) of Pipeline's SourceOperator determines the Pipeline's DOP.
         const auto degree_of_parallelism = pipeline->source_operator_factory()->degree_of_parallelism();
+        LOG(INFO) << "Pipeline " << pipeline->to_readable_string() << " parallel=" << degree_of_parallelism
+                  << " fragment_instance_id=" << print_id(params.fragment_instance_id);
         const bool is_root = (n == num_pipelines - 1);
         // If pipeline's SourceOperator is with morsels, a MorselQueue is added to the SourceOperator.
         // at present, only ScanOperator need a MorselQueue attached.
@@ -173,28 +185,26 @@ Status FragmentExecutor::prepare(ExecEnv* exec_env, const TExecPlanFragmentParam
             if (is_root) {
                 _fragment_ctx->set_num_root_drivers(degree_of_parallelism);
             }
-            for (auto i = 0; i < degree_of_parallelism; ++i) {
-                Operators&& operators = pipeline->create_operators(degree_of_parallelism, i);
-                DriverPtr driver =
-                        std::make_shared<PipelineDriver>(std::move(operators), _query_ctx, _fragment_ctx, 0, is_root);
+            for (size_t i = 0; i < degree_of_parallelism; ++i) {
+                auto&& operators = pipeline->create_operators(degree_of_parallelism, i);
+                DriverPtr driver = std::make_shared<PipelineDriver>(std::move(operators), _query_ctx, _fragment_ctx,
+                                                                    driver_id++, is_root);
                 driver->set_morsel_queue(morsel_queue.get());
                 auto* scan_operator = down_cast<ScanOperator*>(driver->source_operator());
-                if (pipeline_scan_mode == 1) {
-                    scan_operator->set_io_threads(exec_env->pipeline_io_thread_pool());
-                } else {
-                    scan_operator->set_io_threads(nullptr);
-                }
+                scan_operator->set_io_threads(exec_env->pipeline_io_thread_pool());
+                setup_profile_hierarchy(runtime_state, driver);
                 drivers.emplace_back(std::move(driver));
             }
         } else {
             if (is_root) {
                 _fragment_ctx->set_num_root_drivers(degree_of_parallelism);
             }
-            for (auto i = 0; i < degree_of_parallelism; ++i) {
+            for (size_t i = 0; i < degree_of_parallelism; ++i) {
                 auto&& operators = pipeline->create_operators(degree_of_parallelism, i);
-                DriverPtr driver =
-                        std::make_shared<PipelineDriver>(std::move(operators), _query_ctx, _fragment_ctx, i, is_root);
-                drivers.emplace_back(driver);
+                DriverPtr driver = std::make_shared<PipelineDriver>(std::move(operators), _query_ctx, _fragment_ctx,
+                                                                    driver_id++, is_root);
+                setup_profile_hierarchy(runtime_state, driver);
+                drivers.emplace_back(std::move(driver));
             }
         }
     }
@@ -223,7 +233,9 @@ void FragmentExecutor::_convert_data_sink_to_operator(const TPlanFragmentExecPar
         _fragment_ctx->pipelines().back()->add_op_factory(op);
     } else if (typeid(*datasink) == typeid(starrocks::DataStreamSender)) {
         starrocks::DataStreamSender* sender = down_cast<starrocks::DataStreamSender*>(datasink);
-        std::shared_ptr<SinkBuffer> sink_buffer = std::make_shared<SinkBuffer>(sender->get_destinations_size());
+        auto dop = _fragment_ctx->pipelines().back()->source_operator_factory()->degree_of_parallelism();
+        std::shared_ptr<SinkBuffer> sink_buffer = std::make_shared<SinkBuffer>(
+                _fragment_ctx->runtime_state()->instance_mem_tracker(), sender->get_destinations_size(), dop);
 
         OpFactoryPtr exchange_sink = std::make_shared<ExchangeSinkOperatorFactory>(
                 context->next_operator_id(), -1, sink_buffer, sender->get_partition_type(), params.destinations,

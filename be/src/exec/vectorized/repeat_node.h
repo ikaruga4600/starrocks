@@ -22,6 +22,9 @@ public:
     Status get_next(RuntimeState* state, ChunkPtr* row_batch, bool* eos) override;
     Status close(RuntimeState* state) override;
 
+    std::vector<std::shared_ptr<pipeline::OperatorFactory>> decompose_to_pipeline(
+            pipeline::PipelineBuilderContext* context) override;
+
 private:
     static ColumnPtr generate_null_column(int64_t num_rows) {
         auto nullable_column = NullableColumn::create(Int8Column::create(), NullColumn::create());
@@ -34,6 +37,8 @@ private:
         ptr->append_datum(Datum(value));
         return ConstColumn::create(ptr, num_rows);
     }
+
+    void extend_and_update_columns(ChunkPtr* curr_chunk, ChunkPtr* chunk);
 
     // Slot id set used to indicate those slots need to set to null.
     std::vector<std::set<SlotId>> _slot_id_set_list;
@@ -52,9 +57,6 @@ private:
     // accessing chunk.
     ChunkPtr _curr_chunk;
 
-    // original columns for accessing chunk.
-    Columns _curr_columns;
-
     // only null columns for reusing, It has config::vector_chunk_size rows.
     ColumnPtr _column_null;
 
@@ -71,8 +73,6 @@ private:
     TupleId _output_tuple_id;
     const TupleDescriptor* _tuple_desc;
 
-    bool _child_eos = false;
-    int _repeat_id_idx = 0;
     RuntimeState* _runtime_state = nullptr;
 
     // time to append columns for grouping_id column and grouping()/grouping_id()'s virtual columns.

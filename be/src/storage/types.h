@@ -33,7 +33,7 @@
 #include "column/datum.h"
 #include "gen_cpp/segment_v2.pb.h" // for ColumnMetaPB
 #include "gutil/strings/numbers.h"
-#include "runtime/date_value.h"
+#include "runtime/date_value.hpp"
 #include "runtime/datetime_value.h"
 #include "runtime/decimalv2_value.h"
 #include "runtime/mem_pool.h"
@@ -394,7 +394,7 @@ private:
     const size_t _item_size;
 };
 
-bool is_scalar_type(FieldType field_type);
+bool is_scalar_field_type(FieldType field_type);
 
 bool is_complex_metric_type(FieldType field_type);
 

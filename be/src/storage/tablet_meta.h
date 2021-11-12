@@ -110,17 +110,17 @@ using AlterTabletTaskSharedPtr = std::shared_ptr<AlterTabletTask>;
 // The concurrency control is handled in Tablet Class, not in this class.
 class TabletMeta {
 public:
-    static Status create(MemTracker* mem_tracker, const TCreateTabletReq& request, const TabletUid& tablet_uid,
-                         uint64_t shard_id, uint32_t next_unique_id,
+    static Status create(const TCreateTabletReq& request, const TabletUid& tablet_uid, uint64_t shard_id,
+                         uint32_t next_unique_id,
                          const std::unordered_map<uint32_t, uint32_t>& col_ordinal_to_unique_id,
                          RowsetTypePB rowset_type, TabletMetaSharedPtr* tablet_meta);
 
-    explicit TabletMeta(MemTracker* mem_tracker);
-    TabletMeta(MemTracker* mem_tracker, int64_t table_id, int64_t partition_id, int64_t tablet_id, int32_t schema_hash,
-               uint64_t shard_id, const TTabletSchema& tablet_schema, uint32_t next_unique_id,
+    explicit TabletMeta();
+    TabletMeta(int64_t table_id, int64_t partition_id, int64_t tablet_id, int32_t schema_hash, uint64_t shard_id,
+               const TTabletSchema& tablet_schema, uint32_t next_unique_id,
                const std::unordered_map<uint32_t, uint32_t>& col_ordinal_to_unique_id, const TabletUid& tablet_uid,
                TTabletType::type tabletType, RowsetTypePB roset_type);
-    virtual ~TabletMeta() { _mem_tracker->release(_mem_tracker->consumption()); }
+    virtual ~TabletMeta() {}
 
     // Function create_from_file is used to be compatible with previous tablet_meta.
     // Previous tablet_meta is a physical file in tablet dir, which is not stored in rocksdb.
@@ -158,21 +158,18 @@ public:
     Version max_version() const;
 
     inline TabletState tablet_state() const;
+    // NOTE: Normally you should NOT call this method directly but call Tablet::set_tablet_state().
+    // This is a dangerous method, it may change the state from SHUTDOWN to RUNNING again, which should not happen
+    // in normal cases
     inline void set_tablet_state(TabletState state);
 
     inline bool in_restore_mode() const;
 
     inline const TabletSchema& tablet_schema() const;
 
-    inline void set_tablet_schema(const std::shared_ptr<TabletSchema>& tablet_schema) {
-        if (_schema != nullptr) {
-            _mem_tracker->release(_schema->mem_usage());
-        }
-        _schema = tablet_schema;
-        _mem_tracker->consume(_schema->mem_usage());
-    }
+    inline void set_tablet_schema(const std::shared_ptr<const TabletSchema>& tablet_schema) { _schema = tablet_schema; }
 
-    inline std::shared_ptr<TabletSchema>& mutable_tablet_schema() { return _schema; }
+    inline std::shared_ptr<const TabletSchema>& tablet_schema_ptr() { return _schema; }
 
     inline const std::vector<RowsetMetaSharedPtr>& all_rs_metas() const;
     Status add_rs_meta(const RowsetMetaSharedPtr& rs_meta);
@@ -232,8 +229,6 @@ private:
     friend bool operator==(const TabletMeta& a, const TabletMeta& b);
     friend bool operator!=(const TabletMeta& a, const TabletMeta& b);
 
-    std::unique_ptr<MemTracker> _mem_tracker = nullptr;
-
     int64_t _table_id = 0;
     int64_t _partition_id = 0;
     int64_t _tablet_id = 0;
@@ -247,7 +242,7 @@ private:
     TabletState _tablet_state = TABLET_NOTREADY;
     // Note: Segment store the pointer of TabletSchema,
     // so this point should never change
-    std::shared_ptr<TabletSchema> _schema = nullptr;
+    std::shared_ptr<const TabletSchema> _schema = nullptr;
 
     std::vector<RowsetMetaSharedPtr> _rs_metas;
     std::vector<RowsetMetaSharedPtr> _inc_rs_metas;

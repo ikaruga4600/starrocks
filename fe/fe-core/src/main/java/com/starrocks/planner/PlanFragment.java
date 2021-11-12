@@ -506,10 +506,15 @@ public class PlanFragment extends TreeNode<PlanFragment> {
     }
 
     public List<Pair<Integer, ColumnDict>> getGlobalDicts() {
-        return globalDicts;
+        return this.globalDicts;
     }
 
     public void setGlobalDicts(List<Pair<Integer, ColumnDict>> dicts) {
         this.globalDicts = dicts;
+    }
+
+    // For plan fragment has join
+    public void mergeGlobalDicts(List<Pair<Integer, ColumnDict>> dicts) {
+        this.globalDicts.addAll(dicts);
     }
 }

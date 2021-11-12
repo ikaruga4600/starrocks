@@ -12,10 +12,9 @@
 #include "column/vectorized_fwd.h"
 #include "common/status.h"
 #include "exec/vectorized/olap_scan_node.h"
-#include "runtime/current_mem_tracker.h"
-#include "storage/field.h"
 #include "storage/storage_engine.h"
 #include "storage/vectorized/chunk_helper.h"
+#include "storage/vectorized/column_predicate_rewriter.h"
 #include "storage/vectorized/predicate_parser.h"
 #include "storage/vectorized/projection_iterator.h"
 
@@ -48,7 +47,7 @@ Status TabletScanner::init(RuntimeState* runtime_state, const TabletScannerParam
     }
 
     DCHECK(_params.global_dictmaps != nullptr);
-    RETURN_IF_ERROR(_prj_iter->init_res_schema(*_params.global_dictmaps));
+    RETURN_IF_ERROR(_prj_iter->init_encoded_schema(*_params.global_dictmaps));
 
     Status st = _reader->prepare();
     if (!st.ok()) {
@@ -84,6 +83,7 @@ Status TabletScanner::close(RuntimeState* state) {
     _prj_iter->close();
     update_counter();
     _reader.reset();
+    _predicate_free_pool.clear();
     Expr::close(_conjunct_ctxs, state);
     // Reduce the memory usage if the the average string size is greater than 512.
     release_large_columns<BinaryColumn>(config::vector_chunk_size * 512);
@@ -97,7 +97,7 @@ Status TabletScanner::_get_tablet(const TInternalScanRange* scan_range) {
     _version = strtoul(scan_range->version.c_str(), nullptr, 10);
 
     std::string err;
-    _tablet = StorageEngine::instance()->tablet_manager()->get_tablet(tablet_id, schema_hash, true, &err);
+    _tablet = StorageEngine::instance()->tablet_manager()->get_tablet(tablet_id, true, &err);
     if (!_tablet) {
         std::stringstream ss;
         ss << "failed to get tablet. tablet_id=" << tablet_id << ", with schema_hash=" << schema_hash
@@ -121,27 +121,19 @@ Status TabletScanner::_init_reader_params(const std::vector<OlapScanRange*>* key
     _params.chunk_size = config::vector_chunk_size;
 
     PredicateParser parser(_tablet->tablet_schema());
+    std::vector<vectorized::ColumnPredicate*> preds;
+    _parent->_conjuncts_manager.get_column_predicates(&parser, &preds);
+    for (auto* p : preds) {
+        _predicate_free_pool.emplace_back(p);
+        if (parser.can_pushdown(p)) {
+            _params.predicates.push_back(p);
+        } else {
+            _predicates.add(p);
+        }
+    }
 
-    // Condition
-    for (auto& filter : _parent->_olap_filter) {
-        ColumnPredicate* p = parser.parse(filter);
-        p->set_index_filter_only(filter.is_index_filter_only);
-        _predicate_free_pool.emplace_back(p);
-        if (parser.can_pushdown(p)) {
-            _params.predicates.push_back(p);
-        } else {
-            _predicates.add(p);
-        }
-    }
-    for (auto& is_null_str : _parent->_is_null_vector) {
-        ColumnPredicate* p = parser.parse(is_null_str);
-        _predicate_free_pool.emplace_back(p);
-        if (parser.can_pushdown(p)) {
-            _params.predicates.push_back(p);
-        } else {
-            _predicates.add(p);
-        }
-    }
+    ConjunctivePredicatesRewriter not_pushdown_predicate_rewriter(_predicates, *_params.global_dictmaps);
+    not_pushdown_predicate_rewriter.rewrite_predicate(&_parent->_obj_pool);
 
     // Range
     for (auto key_range : *key_ranges) {
@@ -203,7 +195,7 @@ Status TabletScanner::_init_return_columns() {
 // mapping a slot-column-id to schema-columnid
 Status TabletScanner::_init_global_dicts() {
     const auto& global_dict_map = _runtime_state->get_global_dict_map();
-    auto global_dict = _parent->_obj_pool.add(new std::unordered_map<uint32_t, GlobalDictMap*>());
+    auto global_dict = _parent->_obj_pool.add(new ColumnIdToGlobalDictMap());
     // mapping column id to storage column ids
     for (auto slot : _parent->_tuple_desc->slots()) {
         if (!slot->is_materialized()) {
@@ -237,20 +229,16 @@ Status TabletScanner::get_chunk(RuntimeState* state, Chunk* chunk) {
         }
 
         if (!_predicates.empty()) {
-            int64_t old_mem_usage = chunk->memory_usage();
             SCOPED_TIMER(_expr_filter_timer);
             size_t nrows = chunk->num_rows();
             _selection.resize(nrows);
             _predicates.evaluate(chunk, _selection.data(), 0, nrows);
             chunk->filter(_selection);
-            CurrentMemTracker::consume((int64_t)chunk->memory_usage() - old_mem_usage);
             DCHECK_CHUNK(chunk);
         }
         if (!_conjunct_ctxs.empty()) {
-            int64_t old_mem_usage = chunk->memory_usage();
             SCOPED_TIMER(_expr_filter_timer);
             ExecNode::eval_conjuncts(_conjunct_ctxs, chunk);
-            CurrentMemTracker::consume((int64_t)chunk->memory_usage() - old_mem_usage);
             DCHECK_CHUNK(chunk);
         }
     } while (chunk->num_rows() == 0);
@@ -296,7 +284,7 @@ void TabletScanner::update_counter() {
     COUNTER_UPDATE(_parent->_pred_filter_timer, _reader->stats().vec_cond_evaluate_ns);
     COUNTER_UPDATE(_parent->_pred_filter_counter, _reader->stats().rows_vec_cond_filtered);
     COUNTER_UPDATE(_parent->_del_vec_filter_counter, _reader->stats().rows_del_vec_filtered);
-
+    COUNTER_UPDATE(_parent->_seg_zm_filtered_counter, _reader->stats().segment_stats_filtered);
     COUNTER_UPDATE(_parent->_zm_filtered_counter, _reader->stats().rows_stats_filtered);
     COUNTER_UPDATE(_parent->_bf_filtered_counter, _reader->stats().rows_bf_filtered);
     COUNTER_UPDATE(_parent->_sk_filtered_counter, _reader->stats().rows_key_range_filtered);

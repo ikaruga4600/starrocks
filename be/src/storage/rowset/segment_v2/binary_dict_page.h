@@ -28,7 +28,6 @@
 #include "gen_cpp/segment_v2.pb.h"
 #include "gutil/hash/string_hash.h"
 #include "runtime/mem_pool.h"
-#include "runtime/mem_tracker.h"
 #include "storage/column_block.h"
 #include "storage/column_vector.h"
 #include "storage/olap_common.h"
@@ -75,6 +74,8 @@ public:
 
     Status get_last_value(void* value) const override;
 
+    bool is_valid_global_dict(const vectorized::GlobalDictMap* global_dict) const override;
+
     // Return true iff all pages so far are encoded by dictionary encoding.
     // this method normally should be called after all data pages finish
     // write, i.e, after `finish` has been called.
@@ -108,7 +109,6 @@ private:
     // query for dict item -> dict id
     phmap::flat_hash_map<std::string, uint32_t, HashOfSlice, Eq> _dictionary;
     // TODO(zc): rethink about this mem pool
-    MemTracker _tracker;
     MemPool _pool;
     faststring _first_value;
 };

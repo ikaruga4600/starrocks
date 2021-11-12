@@ -104,8 +104,8 @@ public class DistributedEnvPlanWithCostTest extends DistributedEnvPlanTestBase {
                 "join test_all_type b on a.id_date = b.id_datetime ;";
         String planFragment = getFragmentPlan(sql);
         Assert.assertTrue(planFragment.contains("  1:Project\n"
-                + "  |  <slot 22> : CAST(9: id_date AS DATETIME)\n"
-                + "  |  <slot 9> : 9: id_date\n"));
+                + "  |  <slot 9> : 9: id_date\n"
+                + "  |  <slot 22> : CAST(9: id_date AS DATETIME)\n"));
     }
 
     @Test
@@ -241,13 +241,13 @@ public class DistributedEnvPlanWithCostTest extends DistributedEnvPlanTestBase {
         String planFragment = getCostExplain(sql);
         Assert.assertTrue(planFragment.contains("9:Project\n" +
                 "  |  output columns:\n" +
-                "  |  16 <-> [16: S_ACCTBAL, DOUBLE, false]\n" +
                 "  |  1 <-> [1: P_PARTKEY, INT, false]\n" +
-                "  |  17 <-> [17: S_COMMENT, VARCHAR, false]\n" +
                 "  |  3 <-> [3: P_MFGR, VARCHAR, false]\n" +
                 "  |  12 <-> [12: S_NAME, CHAR, false]\n" +
                 "  |  13 <-> [13: S_ADDRESS, VARCHAR, false]\n" +
                 "  |  15 <-> [15: S_PHONE, CHAR, false]\n" +
+                "  |  16 <-> [16: S_ACCTBAL, DOUBLE, false]\n" +
+                "  |  17 <-> [17: S_COMMENT, VARCHAR, false]\n" +
                 "  |  cardinality: 400000"));
     }
 
@@ -284,7 +284,6 @@ public class DistributedEnvPlanWithCostTest extends DistributedEnvPlanTestBase {
                 + "'FRANCE') ) and l_shipdate between date '1995-01-01' and date '1996-12-31' ) as shipping "
                 + "group by supp_nation, cust_nation, l_year order by supp_nation, cust_nation, l_year;";
         String plan = getCostExplain(sql);
-        System.out.println(plan);
         Assert.assertTrue(plan.contains("     probe runtime filters:\n"
                 + "     - filter_id = 2, probe_expr = (11: L_SUPPKEY)\n"));
     }
@@ -477,6 +476,7 @@ public class DistributedEnvPlanWithCostTest extends DistributedEnvPlanTestBase {
                 "                or (n1.n_nationkey = 2 and n2.n_nationkey = 1)\n" +
                 "            )";
         String plan = getCostExplain(sql);
+
         // eval predicate cardinality in scan node
         Assert.assertTrue(plan.contains("0:OlapScanNode\n" +
                 "     table: nation, rollup: nation\n" +
@@ -526,5 +526,71 @@ public class DistributedEnvPlanWithCostTest extends DistributedEnvPlanTestBase {
         String plan = getFragmentPlan(sql);
         Assert.assertTrue(plan.contains("1:AGGREGATE (update serialize)"));
         Assert.assertTrue(plan.contains("3:AGGREGATE (merge finalize)"));
+    }
+
+    // check outer join with isNull predicate on inner table
+    // The estimate cardinality of join should not be 0.
+    @Test
+    public void testOuterJoinWithIsNullPredicate() throws Exception {
+        // test left outer join
+        String sql = "select ps_partkey,ps_suppkey from partsupp left outer join part on " +
+                "ps_partkey = p_partkey where p_partkey is null";
+        String plan = getCostExplain(sql);
+        Assert.assertTrue(plan.contains("3:HASH JOIN\n" +
+                "  |  join op: LEFT OUTER JOIN (BUCKET_SHUFFLE)\n" +
+                "  |  equal join conjunct: [1: PS_PARTKEY, INT, false] = [7: P_PARTKEY, INT, true]\n" +
+                "  |  other predicates: 7: P_PARTKEY IS NULL\n" +
+                "  |  cardinality: 8000000"));
+        // test right outer join
+        sql = "select ps_partkey,ps_suppkey from partsupp right outer join part on " +
+                "ps_partkey = p_partkey where ps_partkey is null";
+        plan = getCostExplain(sql);
+        Assert.assertTrue(plan.contains("3:HASH JOIN\n" +
+                "  |  join op: RIGHT OUTER JOIN (BUCKET_SHUFFLE)\n" +
+                "  |  equal join conjunct: [1: PS_PARTKEY, INT, true] = [7: P_PARTKEY, INT, false]\n" +
+                "  |  other predicates: 1: PS_PARTKEY IS NULL\n" +
+                "  |  cardinality: 8000000"));
+        // test full outer join
+        sql = "select ps_partkey,ps_suppkey from partsupp full outer join part on " +
+                "ps_partkey = p_partkey where ps_partkey is null";
+        plan = getCostExplain(sql);
+        Assert.assertTrue(plan.contains("3:HASH JOIN\n" +
+                "  |  join op: FULL OUTER JOIN (BUCKET_SHUFFLE)\n" +
+                "  |  equal join conjunct: [1: PS_PARTKEY, INT, true] = [7: P_PARTKEY, INT, true]\n" +
+                "  |  other predicates: 1: PS_PARTKEY IS NULL\n" +
+                "  |  cardinality: 4000000"));
+    }
+
+    @Test
+    public void testDateFunctionCardinality() throws Exception {
+        String sql = "SELECT Month(P_PARTKEY) AS month FROM part GROUP BY month ORDER BY month DESC LIMIT 5";
+        String plan = getCostExplain(sql);
+        Assert.assertTrue(plan.contains("* month-->[1.0, 12.0, 0.0, 4.0, 12.0]"));
+        Assert.assertTrue(plan.contains("2:AGGREGATE (update serialize)"));
+        Assert.assertTrue(plan.contains("4:AGGREGATE (merge finalize)"));
+
+        sql = "SELECT day(P_PARTKEY) AS day FROM part GROUP BY day ORDER BY day DESC LIMIT 5";
+        plan = getCostExplain(sql);
+        Assert.assertTrue(plan.contains("day-->[1.0, 31.0, 0.0, 4.0, 31.0]"));
+        Assert.assertTrue(plan.contains("2:AGGREGATE (update serialize)"));
+        Assert.assertTrue(plan.contains("4:AGGREGATE (merge finalize)"));
+
+        sql = "SELECT hour(P_PARTKEY) AS hour FROM part GROUP BY hour ORDER BY hour DESC LIMIT 5";
+        plan = getCostExplain(sql);
+        Assert.assertTrue(plan.contains(" hour-->[0.0, 23.0, 0.0, 4.0, 24.0]"));
+        Assert.assertTrue(plan.contains("2:AGGREGATE (update serialize)"));
+        Assert.assertTrue(plan.contains("4:AGGREGATE (merge finalize)"));
+
+        sql = "SELECT minute(P_PARTKEY) AS minute FROM part GROUP BY minute ORDER BY minute DESC LIMIT 5";
+        plan = getCostExplain(sql);
+        Assert.assertTrue(plan.contains("minute-->[0.0, 59.0, 0.0, 4.0, 60.0]"));
+        Assert.assertTrue(plan.contains("2:AGGREGATE (update serialize)"));
+        Assert.assertTrue(plan.contains("4:AGGREGATE (merge finalize)"));
+
+        sql = "SELECT second(P_PARTKEY) AS second FROM part GROUP BY second ORDER BY second DESC LIMIT 5";
+        plan = getCostExplain(sql);
+        Assert.assertTrue(plan.contains("* second-->[0.0, 59.0, 0.0, 4.0, 60.0]"));
+        Assert.assertTrue(plan.contains("2:AGGREGATE (update serialize)"));
+        Assert.assertTrue(plan.contains("4:AGGREGATE (merge finalize)"));
     }
 }

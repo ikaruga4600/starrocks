@@ -4,6 +4,11 @@
 
 #include "column/chunk.h"
 #include "column/column_helper.h"
+#include "exec/pipeline/crossjoin/cross_join_context.h"
+#include "exec/pipeline/crossjoin/cross_join_left_operator.h"
+#include "exec/pipeline/crossjoin/cross_join_right_sink_operator.h"
+#include "exec/pipeline/operator.h"
+#include "exec/pipeline/pipeline_builder.h"
 #include "exprs/expr_context.h"
 #include "runtime/runtime_state.h"
 
@@ -35,6 +40,10 @@ Status CrossJoinNode::open(RuntimeState* state) {
     RETURN_IF_ERROR(_build(state));
 
     RETURN_IF_ERROR(child(0)->open(state));
+
+    if (_build_chunk != nullptr) {
+        _mem_tracker->set(_build_chunk->memory_usage());
+    }
 
     return Status::OK();
 }
@@ -451,6 +460,7 @@ Status CrossJoinNode::_build(RuntimeState* state) {
     RETURN_IF_ERROR(child(1)->open(state));
 
     while (true) {
+        RETURN_IF_ERROR(state->check_mem_limit("CrossJoin"));
         bool eos = false;
         ChunkPtr chunk = nullptr;
         RETURN_IF_CANCELLED(state);
@@ -522,6 +532,35 @@ void CrossJoinNode::_init_chunk(ChunkPtr* chunk) {
 
     *chunk = std::move(new_chunk);
     (*chunk)->reserve(config::vector_chunk_size);
+}
+
+pipeline::OpFactories CrossJoinNode::decompose_to_pipeline(pipeline::PipelineBuilderContext* context) {
+    using namespace pipeline;
+
+    // step 0: construct pipeline end with cross join right operator.
+    OpFactories right_ops = _children[1]->decompose_to_pipeline(context);
+
+    // communication with CrossJoinLeft through shared_datas.
+    auto* right_source = down_cast<SourceOperatorFactory*>(right_ops[0].get());
+    auto cross_join_context = std::make_shared<pipeline::CrossJoinContext>(right_source->degree_of_parallelism());
+
+    // cross_join_right as sink operator
+    auto right_factory =
+            std::make_shared<CrossJoinRightSinkOperatorFactory>(context->next_operator_id(), id(), cross_join_context);
+    right_ops.emplace_back(std::move(right_factory));
+    context->add_pipeline(right_ops);
+
+    // step 1: construct pipeline end with cross join left operator(cross join left maybe not sink operator).
+    OpFactories left_ops = _children[0]->decompose_to_pipeline(context);
+
+    // communication with CrossJoioRight through shared_datas.
+    auto left_factory = std::make_shared<CrossJoinLeftOperatorFactory>(
+            context->next_operator_id(), id(), _row_descriptor, child(0)->row_desc(), child(1)->row_desc(),
+            std::move(_conjunct_ctxs), std::move(cross_join_context));
+    left_ops.emplace_back(std::move(left_factory));
+
+    // return as the following pipeline
+    return left_ops;
 }
 
 } // namespace starrocks::vectorized

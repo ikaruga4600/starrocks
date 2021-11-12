@@ -4,11 +4,13 @@
 
 #include "column/vectorized_fwd.h"
 #include "common/statusor.h"
+#include "gutil/casts.h"
+#include "runtime/mem_tracker.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks {
 class Expr;
 class ExprContext;
-class MemTracker;
 class RuntimeProfile;
 class RuntimeState;
 namespace pipeline {
@@ -17,6 +19,8 @@ using OperatorPtr = std::shared_ptr<Operator>;
 using Operators = std::vector<OperatorPtr>;
 
 class Operator {
+    friend class PipelineDriver;
+
 public:
     Operator(int32_t id, const std::string& name, int32_t plan_node_id);
     virtual ~Operator() = default;
@@ -53,11 +57,13 @@ public:
 
     int32_t get_plan_node_id() const { return _plan_node_id; }
 
-    MemTracker* get_memtracker() const { return _mem_tracker.get(); }
-
     RuntimeProfile* get_runtime_profile() const { return _runtime_profile.get(); }
 
-    std::string get_name() const { return _name + "_" + std::to_string(_id); }
+    std::string get_name() const {
+        std::stringstream ss;
+        ss << _name + "_" << this;
+        return ss.str();
+    }
 
 protected:
     int32_t _id = 0;
@@ -65,7 +71,16 @@ protected:
     // Which plan node this operator belongs to
     int32_t _plan_node_id = -1;
     std::shared_ptr<RuntimeProfile> _runtime_profile;
-    std::shared_ptr<MemTracker> _mem_tracker;
+    std::unique_ptr<MemTracker> _mem_tracker;
+
+    // Common metrics
+    RuntimeProfile::Counter* _push_timer = nullptr;
+    RuntimeProfile::Counter* _pull_timer = nullptr;
+
+    RuntimeProfile::Counter* _push_chunk_num_counter = nullptr;
+    RuntimeProfile::Counter* _push_row_num_counter = nullptr;
+    RuntimeProfile::Counter* _pull_chunk_num_counter = nullptr;
+    RuntimeProfile::Counter* _pull_row_num_counter = nullptr;
 };
 
 class OperatorFactory {
@@ -74,11 +89,11 @@ public:
             : _id(id), _name(name), _plan_node_id(plan_node_id) {}
     virtual ~OperatorFactory() = default;
     // Create the operator for the specific sequence driver
-    // For some operators, when share some status, need to know the the degree_of_parallelism
+    // For some operators, when share some status, need to know the degree_of_parallelism
     virtual OperatorPtr create(int32_t degree_of_parallelism, int32_t driver_sequence) = 0;
     virtual bool is_source() const { return false; }
     int32_t plan_node_id() const { return _plan_node_id; }
-    virtual Status prepare(RuntimeState* state, MemTracker* mem_tracker) { return Status::OK(); }
+    virtual Status prepare(RuntimeState* state) { return Status::OK(); }
     virtual void close(RuntimeState* state) {}
     std::string get_name() const { return _name + "_" + std::to_string(_id); }
 

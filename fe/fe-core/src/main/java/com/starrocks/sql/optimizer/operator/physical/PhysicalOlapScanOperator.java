@@ -3,6 +3,7 @@
 package com.starrocks.sql.optimizer.operator.physical;
 
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.Pair;
@@ -13,6 +14,7 @@ import com.starrocks.sql.optimizer.base.HashDistributionDesc;
 import com.starrocks.sql.optimizer.base.HashDistributionSpec;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.OperatorVisitor;
+import com.starrocks.sql.optimizer.operator.Projection;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.statistics.ColumnDict;
@@ -31,7 +33,11 @@ public class PhysicalOlapScanOperator extends PhysicalScanOperator {
     private boolean isPreAggregation;
     private String turnOffReason;
 
-    private final List<Pair<Integer, ColumnDict>> globalDicts = Lists.newArrayList();
+    private List<Pair<Integer, ColumnDict>> globalDicts = Lists.newArrayList();
+    // For the simple predicate k1 = "olap", could apply global dict optimization,
+    // need to store the string column k1 and generate the string slot in plan fragment builder
+    private List<ColumnRefOperator> globalDictStringColumns = Lists.newArrayList();
+    private Map<Integer, Integer> dictStringIdToIntIds = Maps.newHashMap();
 
     public PhysicalOlapScanOperator(Table table,
                                     List<ColumnRefOperator> outputColumns,
@@ -41,8 +47,10 @@ public class PhysicalOlapScanOperator extends PhysicalScanOperator {
                                     ScalarOperator predicate,
                                     long selectedIndexId,
                                     List<Long> selectedPartitionId,
-                                    List<Long> selectedTabletId) {
-        super(OperatorType.PHYSICAL_OLAP_SCAN, table, outputColumns, colRefToColumnMetaMap, limit, predicate);
+                                    List<Long> selectedTabletId,
+                                    Projection projection) {
+        super(OperatorType.PHYSICAL_OLAP_SCAN, table, outputColumns, colRefToColumnMetaMap, limit, predicate,
+                projection);
         this.hashDistributionSpec = hashDistributionDesc;
         this.selectedIndexId = selectedIndexId;
         this.selectedPartitionId = selectedPartitionId;
@@ -81,12 +89,26 @@ public class PhysicalOlapScanOperator extends PhysicalScanOperator {
         return globalDicts;
     }
 
-    public void addGlobalDictColumns(Pair<Integer, ColumnDict> dict) {
-        globalDicts.add(dict);
+    public void setGlobalDicts(
+            List<Pair<Integer, ColumnDict>> globalDicts) {
+        this.globalDicts = globalDicts;
     }
 
-    public boolean couldApplyStringDict(List<Integer> childDictColumns) {
-        return true;
+    public List<ColumnRefOperator> getGlobalDictStringColumns() {
+        return globalDictStringColumns;
+    }
+
+    public void setGlobalDictStringColumns(
+            List<ColumnRefOperator> globalDictStringColumns) {
+        this.globalDictStringColumns = globalDictStringColumns;
+    }
+
+    public Map<Integer, Integer> getDictStringIdToIntIds() {
+        return dictStringIdToIntIds;
+    }
+
+    public void setDictStringIdToIntIds(Map<Integer, Integer> dictStringIdToIntIds) {
+        this.dictStringIdToIntIds = dictStringIdToIntIds;
     }
 
     @Override
@@ -119,7 +141,6 @@ public class PhysicalOlapScanOperator extends PhysicalScanOperator {
         }
     }
 
-    // FixMe(KKS): Fix filter
     @Override
     public boolean couldApplyStringDict(Set<Integer> childDictColumns) {
         return true;

@@ -729,21 +729,24 @@ public class ShowExecutor {
         List<List<String>> rows = Lists.newArrayList();
         Database db = ctx.getCatalog().getDb(showStmt.getDbName());
         if (db == null) {
-            ErrorReport.reportAnalysisException(ErrorCode.ERR_BAD_TABLE_ERROR, showStmt.getTableName().toString());
+            ErrorReport.reportAnalysisException(ErrorCode.ERR_BAD_DB_ERROR, showStmt.getDbName());
         }
         db.readLock();
         try {
             Table table = db.getTable(showStmt.getTableName().getTbl());
-            if (table != null && table instanceof OlapTable) {
+            if (table == null) {
+                ErrorReport.reportAnalysisException(ErrorCode.ERR_BAD_TABLE_ERROR,
+                        db.getFullName() + "." + showStmt.getTableName().toString());
+            } else if (table instanceof OlapTable) {
                 List<Index> indexes = ((OlapTable) table).getIndexes();
                 for (Index index : indexes) {
                     rows.add(Lists.newArrayList(showStmt.getTableName().toString(), "", index.getIndexName(),
-                            "", index.getColumns().stream().collect(Collectors.joining(",")), "", "", "", "",
+                            "", String.join(",", index.getColumns()), "", "", "", "",
                             "", index.getIndexType().name(), index.getComment()));
                 }
             } else {
-                ErrorReport.reportAnalysisException(ErrorCode.ERR_BAD_TABLE_ERROR,
-                        db.getFullName() + "." + showStmt.getTableName().toString());
+                // other type view, mysql, hive, es
+                // do nothing
             }
         } finally {
             db.readUnlock();
@@ -997,7 +1000,7 @@ public class ShowExecutor {
     }
 
     // Show alter statement.
-    private void handleShowCollation() throws AnalysisException {
+    private void handleShowCollation() {
         ShowCollationStmt showStmt = (ShowCollationStmt) stmt;
         List<List<String>> rows = Lists.newArrayList();
         List<String> row = Lists.newArrayList();
@@ -1005,6 +1008,15 @@ public class ShowExecutor {
         row.add("utf8_general_ci");
         row.add("utf8");
         row.add("33");
+        row.add("Yes");
+        row.add("Yes");
+        row.add("1");
+        rows.add(row);
+        // | binary | binary | 63 | Yes | Yes | 1 |
+        row = Lists.newArrayList();
+        row.add("binary");
+        row.add("binary");
+        row.add("63");
         row.add("Yes");
         row.add("Yes");
         row.add("1");

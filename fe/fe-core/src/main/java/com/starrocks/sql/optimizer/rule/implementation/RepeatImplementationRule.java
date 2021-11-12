@@ -14,16 +14,16 @@ import java.util.List;
 
 public class RepeatImplementationRule extends ImplementationRule {
     public RepeatImplementationRule() {
-        super(RuleType.IMP_REPEAT,
-                Pattern.create(OperatorType.LOGICAL_REPEAT)
-                        .addChildren(Pattern.create(OperatorType.PATTERN_MULTI_LEAF)));
+        super(RuleType.IMP_REPEAT, Pattern.create(OperatorType.LOGICAL_REPEAT)
+                .addChildren(Pattern.create(OperatorType.PATTERN_MULTI_LEAF)));
     }
 
     @Override
     public List<OptExpression> transform(OptExpression input, OptimizerContext context) {
         LogicalRepeatOperator repeatOperator = (LogicalRepeatOperator) input.getOp();
         PhysicalRepeatOperator physicalRepeat = new PhysicalRepeatOperator(repeatOperator.getOutputGrouping(),
-                repeatOperator.getRepeatColumnRef(), repeatOperator.getGroupingIds());
+                repeatOperator.getRepeatColumnRef(), repeatOperator.getGroupingIds(), repeatOperator.getLimit(),
+                repeatOperator.getPredicate(), repeatOperator.getProjection());
         return Lists.newArrayList(OptExpression.create(physicalRepeat, input.getInputs()));
     }
 }

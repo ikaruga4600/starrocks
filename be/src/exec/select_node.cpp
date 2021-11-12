@@ -21,6 +21,8 @@
 
 #include "exec/select_node.h"
 
+#include "exec/pipeline/pipeline_builder.h"
+#include "exec/pipeline/select_operator.h"
 #include "exprs/expr.h"
 #include "gen_cpp/PlanNodes_types.h"
 #include "runtime/raw_value.h"
@@ -31,6 +33,12 @@ namespace starrocks {
 
 SelectNode::SelectNode(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs)
         : ExecNode(pool, tnode, descs), _child_eos(false) {}
+
+SelectNode::~SelectNode() {
+    if (runtime_state() != nullptr) {
+        ExecNode::close(runtime_state());
+    }
+}
 
 Status SelectNode::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(ExecNode::prepare(state));
@@ -84,6 +92,17 @@ Status SelectNode::close(RuntimeState* state) {
         return Status::OK();
     }
     return ExecNode::close(state);
+}
+
+pipeline::OpFactories SelectNode::decompose_to_pipeline(pipeline::PipelineBuilderContext* context) {
+    using namespace pipeline;
+
+    OpFactories operators = _children[0]->decompose_to_pipeline(context);
+
+    operators.emplace_back(
+            std::make_shared<SelectOperatorFactory>(context->next_operator_id(), id(), std::move(_conjunct_ctxs)));
+
+    return operators;
 }
 
 } // namespace starrocks

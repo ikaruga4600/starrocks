@@ -51,7 +51,6 @@ Status DistinctStreamingNode::get_next(RuntimeState* state, ChunkPtr* chunk, boo
             size_t input_chunk_size = input_chunk->num_rows();
             _aggregator->update_num_input_rows(input_chunk_size);
             COUNTER_SET(_aggregator->input_row_count(), _aggregator->num_input_rows());
-            RETURN_IF_ERROR(_aggregator->check_hash_set_memory_usage(state));
             _aggregator->evaluate_exprs(input_chunk.get());
 
             if (_aggregator->streaming_preaggregation_mode() == TStreamingPreaggregationMode::FORCE_STREAMING) {
@@ -61,6 +60,7 @@ Status DistinctStreamingNode::get_next(RuntimeState* state, ChunkPtr* chunk, boo
                 break;
             } else if (_aggregator->streaming_preaggregation_mode() ==
                        TStreamingPreaggregationMode::FORCE_PREAGGREGATION) {
+                RETURN_IF_ERROR(state->check_mem_limit("AggrNode"));
                 SCOPED_TIMER(_aggregator->agg_compute_timer());
 
                 if (false) {
@@ -82,6 +82,10 @@ Status DistinctStreamingNode::get_next(RuntimeState* state, ChunkPtr* chunk, boo
                 }
 
                 COUNTER_SET(_aggregator->hash_table_size(), (int64_t)_aggregator->hash_set_variant().size());
+
+                _mem_tracker->set(_aggregator->hash_set_variant().memory_usage() +
+                                  _aggregator->mem_pool()->total_reserved_bytes());
+
                 continue;
             } else {
                 // TODO: calc the real capacity of hashtable, will add one interface in the class of habletable
@@ -93,6 +97,7 @@ Status DistinctStreamingNode::get_next(RuntimeState* state, ChunkPtr* chunk, boo
                     _aggregator->should_expand_preagg_hash_tables(_children[0]->rows_returned(), input_chunk_size,
                                                                   _aggregator->mem_pool()->total_allocated_bytes(),
                                                                   _aggregator->hash_set_variant().size())) {
+                    RETURN_IF_ERROR(state->check_mem_limit("AggrNode"));
                     // hash table is not full or allow expand the hash table according reduction rate
                     SCOPED_TIMER(_aggregator->agg_compute_timer());
 
@@ -115,6 +120,10 @@ Status DistinctStreamingNode::get_next(RuntimeState* state, ChunkPtr* chunk, boo
                     }
 
                     COUNTER_SET(_aggregator->hash_table_size(), (int64_t)_aggregator->hash_set_variant().size());
+
+                    _mem_tracker->set(_aggregator->hash_set_variant().memory_usage() +
+                                      _aggregator->mem_pool()->total_reserved_bytes());
+
                     continue;
                 } else {
                     {
@@ -208,22 +217,26 @@ std::vector<std::shared_ptr<pipeline::OperatorFactory> > DistinctStreamingNode::
         pipeline::PipelineBuilderContext* context) {
     using namespace pipeline;
     OpFactories operators_with_sink = _children[0]->decompose_to_pipeline(context);
-    operators_with_sink = context->maybe_interpolate_local_exchange(operators_with_sink);
+    // We cannot get degree of parallelism from PipelineBuilderContext, of which is only a suggest value
+    // and we may set other parallelism for source operator in many special cases
+    size_t degree_of_parallelism =
+            down_cast<SourceOperatorFactory*>(operators_with_sink[0].get())->degree_of_parallelism();
 
-    // shared by sink operator and source operator
-    AggregatorPtr aggregator = std::make_shared<Aggregator>(_tnode, child(0)->row_desc());
+    // shared by sink operator factory and source operator factory
+    AggregatorFactoryPtr aggregator_factory = std::make_shared<AggregatorFactory>(_tnode);
 
-    operators_with_sink.emplace_back(std::make_shared<AggregateDistinctStreamingSinkOperatorFactory>(
-            context->next_operator_id(), id(), aggregator));
+    auto sink_operator = std::make_shared<AggregateDistinctStreamingSinkOperatorFactory>(context->next_operator_id(),
+                                                                                         id(), aggregator_factory);
+    operators_with_sink.emplace_back(sink_operator);
     context->add_pipeline(operators_with_sink);
 
     OpFactories operators_with_source;
     auto source_operator = std::make_shared<AggregateDistinctStreamingSourceOperatorFactory>(
-            context->next_operator_id(), id(), aggregator);
+            context->next_operator_id(), id(), aggregator_factory);
 
-    // TODO(hcf) Currently, the shared data structure aggregator does not support concurrency.
-    // So the degree of parallism must set to 1, we'll fix it later
-    source_operator->set_degree_of_parallelism(1);
+    // Aggregator must be used by a pair of sink and source operators,
+    // so operators_with_source's degree of parallelism must be equal with operators_with_sink's
+    source_operator->set_degree_of_parallelism(degree_of_parallelism);
     operators_with_source.push_back(std::move(source_operator));
     return operators_with_source;
 }

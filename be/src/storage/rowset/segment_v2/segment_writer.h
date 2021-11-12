@@ -29,6 +29,7 @@
 #include "common/status.h" // Status
 #include "gen_cpp/segment_v2.pb.h"
 #include "gutil/macros.h"
+#include "runtime/global_dicts.h"
 
 namespace starrocks {
 
@@ -57,7 +58,7 @@ extern const uint32_t k_segment_magic_length;
 struct SegmentWriterOptions {
     uint32_t storage_format_version = 1;
     uint32_t num_rows_per_block = 1024;
-    MemTracker* mem_tracker = nullptr;
+    vectorized::GlobalDictByNameMaps* global_dicts = nullptr;
 };
 
 class SegmentWriter {
@@ -84,6 +85,8 @@ public:
 
     uint32_t segment_id() const { return _segment_id; }
 
+    const vectorized::DictColumnsValidMap& global_dict_columns_valid_info() { return _global_dict_columns_valid_info; }
+
 private:
     Status _write_data();
     Status _write_ordinal_index();
@@ -95,7 +98,6 @@ private:
     Status _write_raw_data(const std::vector<Slice>& slices);
     void _init_column_meta(ColumnMetaPB* meta, uint32_t* column_id, const TabletColumn& column);
 
-    std::unique_ptr<MemTracker> _mem_tracker = nullptr;
     uint32_t _segment_id;
     const TabletSchema* _tablet_schema;
     SegmentWriterOptions _opts;
@@ -106,6 +108,8 @@ private:
     std::unique_ptr<ShortKeyIndexBuilder> _index_builder;
     std::vector<std::unique_ptr<ColumnWriter>> _column_writers;
     uint32_t _row_count = 0;
+
+    vectorized::DictColumnsValidMap _global_dict_columns_valid_info;
 };
 
 } // namespace segment_v2

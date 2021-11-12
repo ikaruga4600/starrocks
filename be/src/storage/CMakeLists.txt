@@ -74,20 +74,25 @@ add_library(Olap STATIC
     tablet_meta.cpp
     tablet_meta_manager.cpp
     tablet_schema.cpp
+    tablet_schema_map.cpp
     tablet_updates.cpp
     txn_manager.cpp
     types.cpp
     update_manager.cpp
     utils.cpp
     wrapper_field.cpp
+    rowset/segment_v2/array_column_iterator.cpp
     rowset/segment_v2/binary_plain_page.cpp
     rowset/segment_v2/bitmap_index_reader.cpp
     rowset/segment_v2/bitmap_index_writer.cpp
     rowset/segment_v2/bitshuffle_page.cpp
     rowset/segment_v2/bitshuffle_wrapper.cpp
+    rowset/segment_v2/column_iterator.cpp
     rowset/segment_v2/column_reader.cpp
     rowset/segment_v2/column_writer.cpp
+    rowset/segment_v2/default_value_column_iterator.cpp
     rowset/segment_v2/encoding_info.cpp
+    rowset/segment_v2/scalar_column_iterator.cpp
     rowset/segment_v2/index_page.cpp
     rowset/segment_v2/indexed_column_reader.cpp
     rowset/segment_v2/indexed_column_writer.cpp
@@ -129,6 +134,7 @@ add_library(Olap STATIC
     vectorized/column_not_in_predicate.cpp
     vectorized/column_null_predicate.cpp
     vectorized/column_or_predicate.cpp
+    vectorized/column_expr_predicate.cpp
     vectorized/conjunctive_predicates.cpp
     vectorized/convert_helper.cpp
     vectorized/delete_predicates.cpp
@@ -138,6 +144,7 @@ add_library(Olap STATIC
     vectorized/predicate_parser.cpp
     vectorized/projection_iterator.cpp
     vectorized/push_handler.cpp
+    vectorized/row_source_mask.cpp
     vectorized/schema_change.cpp
     vectorized/tablet_reader.cpp
     vectorized/tablet_reader_params.cpp
@@ -153,4 +160,6 @@ add_library(Olap STATIC
     vectorized/cumulative_compaction.cpp
     vectorized/compaction.cpp
     vectorized/rowset_merger.cpp
+    vectorized/column_predicate_rewriter.cpp
+    vectorized/column_predicate_dict_conjuct.cpp
 )

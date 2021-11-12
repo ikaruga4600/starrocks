@@ -140,6 +140,7 @@ import com.starrocks.common.io.Text;
 import com.starrocks.common.util.Daemon;
 import com.starrocks.common.util.DynamicPartitionUtil;
 import com.starrocks.common.util.MasterDaemon;
+import com.starrocks.common.util.NetUtils;
 import com.starrocks.common.util.PrintableMap;
 import com.starrocks.common.util.PropertyAnalyzer;
 import com.starrocks.common.util.QueryableReentrantLock;
@@ -262,6 +263,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -795,7 +797,7 @@ public class Catalog {
         setMetaDir();
 
         // 0. get local node and helper node info
-        getSelfHostPort();
+        getCheckedSelfHostPort();
         getHelperNodes(args);
 
         // 1. check and create dirs and files
@@ -1043,7 +1045,6 @@ public class Catalog {
                     System.exit(-1);
                 }
             }
-
             getNewImage(rightHelperNode);
         }
 
@@ -1052,11 +1053,7 @@ public class Catalog {
             System.exit(-1);
         }
 
-        if (role.equals(FrontendNodeType.FOLLOWER)) {
-            isElectable = true;
-        } else {
-            isElectable = false;
-        }
+        isElectable = role.equals(FrontendNodeType.FOLLOWER);
 
         systemInfoMap.put(clusterId, systemInfo);
 
@@ -1131,8 +1128,21 @@ public class Catalog {
         return true;
     }
 
-    private void getSelfHostPort() {
-        selfNode = new Pair<String, Integer>(FrontendOptions.getLocalHostAddress(), Config.edit_log_port);
+    private void getCheckedSelfHostPort() {
+        selfNode = new Pair<>(FrontendOptions.getLocalHostAddress(), Config.edit_log_port);
+        /*
+         * For the first time, if the master start up failed, it will also fail to restart.
+         * Check port using before create meta files to avoid this problem.
+         */
+        try {
+            if (NetUtils.isPortUsing(selfNode.first, selfNode.second)) {
+                LOG.error("edit_log_port {} is already in use. will exit.", selfNode.second);
+                System.exit(-1);
+            }
+        } catch (UnknownHostException e) {
+            LOG.error(e);
+            System.exit(-1);
+        }
         LOG.debug("get self node: {}", selfNode);
     }
 
@@ -3024,9 +3034,6 @@ public class Catalog {
         } else if (engineName.equals("mysql")) {
             createMysqlTable(db, stmt);
             return;
-        } else if (engineName.equals("broker")) {
-            createBrokerTable(db, stmt);
-            return;
         } else if (engineName.equalsIgnoreCase("elasticsearch") || engineName.equalsIgnoreCase("es")) {
             createEsTable(db, stmt);
             return;
@@ -3082,11 +3089,13 @@ public class Catalog {
         } else if (partitionDesc instanceof MultiRangePartitionDesc) {
             db.readLock();
             RangePartitionInfo rangePartitionInfo;
+            Map<String, String> tableProperties;
             try {
                 Table table = db.getTable(tableName);
                 CatalogChecker.checkTableExist(db, tableName);
                 CatalogChecker.checkTableTypeOLAP(db, table);
                 OlapTable olapTable = (OlapTable) table;
+                tableProperties = olapTable.getTableProperty().getProperties();
                 PartitionInfo partitionInfo = olapTable.getPartitionInfo();
                 rangePartitionInfo = (RangePartitionInfo) partitionInfo;
             } finally {
@@ -3104,8 +3113,16 @@ public class Catalog {
 
             Column firstPartitionColumn = partitionColumns.get(0);
             MultiRangePartitionDesc multiRangePartitionDesc = (MultiRangePartitionDesc) partitionDesc;
+            Map<String, String> properties = addPartitionClause.getProperties();
+            if (properties == null) {
+                properties = Maps.newHashMap();
+            }
+            if (tableProperties != null && tableProperties.containsKey(DynamicPartitionProperty.START_DAY_OF_WEEK)) {
+                properties.put(DynamicPartitionProperty.START_DAY_OF_WEEK,
+                        tableProperties.get(DynamicPartitionProperty.START_DAY_OF_WEEK));
+            }
             List<SingleRangePartitionDesc> singleRangePartitionDescs = multiRangePartitionDesc
-                    .convertToSingle(firstPartitionColumn.getType(), addPartitionClause.getProperties());
+                    .convertToSingle(firstPartitionColumn.getType(), properties);
             addPartitions(db, tableName, singleRangePartitionDescs, addPartitionClause);
         }
     }
@@ -3536,7 +3553,7 @@ public class Catalog {
 
             // create tablets
             TabletMeta tabletMeta = new TabletMeta(db.getId(), table.getId(), partitionId, indexId, indexMeta.getSchemaHash(),
-                                                   storageMedium);
+                    storageMedium);
             createTablets(db.getClusterName(), index, ReplicaState.NORMAL, distributionInfo, partition.getVisibleVersion(),
                     partition.getVisibleVersionHash(), replicationNum, tabletMeta, tabletIdSet);
             if (index.getId() != table.getBaseIndexId()) {
@@ -3825,10 +3842,10 @@ public class Catalog {
         OlapTable olapTable = null;
         if (stmt.isExternal()) {
             olapTable = new ExternalOlapTable(db.getId(), tableId, tableName, baseSchema, keysType, partitionInfo,
-                                              distributionInfo, indexes, stmt.getProperties());
+                    distributionInfo, indexes, stmt.getProperties());
         } else {
             olapTable = new OlapTable(tableId, tableName, baseSchema, keysType, partitionInfo,
-                                      distributionInfo, indexes);
+                    distributionInfo, indexes);
         }
         olapTable.setComment(stmt.getComment());
 
@@ -3993,6 +4010,8 @@ public class Catalog {
         // if failed in any step, use this set to do clear things
         Set<Long> tabletIdSet = new HashSet<Long>();
 
+        boolean createTblSuccess = false;
+        boolean addToColocateGroupSuccess = false;
         // create partition
         try {
             // do not create partition for external table
@@ -4022,7 +4041,7 @@ public class Catalog {
                     List<Partition> partitions = new ArrayList<>(partitionNameToId.size());
                     for (Map.Entry<String, Long> entry : partitionNameToId.entrySet()) {
                         Partition partition = createPartition(db, olapTable, entry.getValue(), entry.getKey(), versionInfo,
-                                                              tabletIdSet);
+                                tabletIdSet);
                         partitions.add(partition);
                     }
                     // It's ok if partitions is empty.
@@ -4043,12 +4062,20 @@ public class Catalog {
                 if (getDb(db.getFullName()) == null) {
                     throw new DdlException("database has been dropped when creating table");
                 }
-                if (!db.createTableWithLock(olapTable, false, stmt.isSetIfNotExists())) {
-                    ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+                createTblSuccess = db.createTableWithLock(olapTable, false);
+                if (!createTblSuccess) {
+                    if (!stmt.isSetIfNotExists()) {
+                        ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+                    } else {
+                        LOG.info("create table[{}] which already exists", tableName);
+                        return;
+                    }
                 }
             } finally {
                 unlock();
             }
+
+            // NOTE: The table has been added to the database, and the following procedure cannot throw exception.
 
             // we have added these index to memory, only need to persist here
             if (getColocateTableIndex().isColocateTable(tableId)) {
@@ -4057,23 +4084,23 @@ public class Catalog {
                 ColocatePersistInfo info =
                         ColocatePersistInfo.createForAddTable(groupId, tableId, backendsPerBucketSeq);
                 editLog.logColocateAddTable(info);
+                addToColocateGroupSuccess = true;
             }
             LOG.info("successfully create table[{};{}]", tableName, tableId);
             // register or remove table from DynamicPartition after table created
             DynamicPartitionUtil.registerOrRemoveDynamicPartitionTable(db.getId(), olapTable);
             dynamicPartitionScheduler.createOrUpdateRuntimeInfo(
                     tableName, DynamicPartitionScheduler.LAST_UPDATE_TIME, TimeUtils.getCurrentFormatTime());
-        } catch (DdlException e) {
-            for (Long tabletId : tabletIdSet) {
-                Catalog.getCurrentInvertedIndex().deleteTablet(tabletId);
+        } finally {
+            if (!createTblSuccess) {
+                for (Long tabletId : tabletIdSet) {
+                    Catalog.getCurrentInvertedIndex().deleteTablet(tabletId);
+                }
             }
-
             // only remove from memory, because we have not persist it
-            if (getColocateTableIndex().isColocateTable(tableId)) {
+            if (getColocateTableIndex().isColocateTable(tableId) && !addToColocateGroupSuccess) {
                 getColocateTableIndex().removeTable(tableId);
             }
-
-            throw e;
         }
     }
 
@@ -4094,18 +4121,22 @@ public class Catalog {
             if (getDb(db.getFullName()) == null) {
                 throw new DdlException("database has been dropped when creating table");
             }
-            if (!db.createTableWithLock(mysqlTable, false, stmt.isSetIfNotExists())) {
-                ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+            if (!db.createTableWithLock(mysqlTable, false)) {
+                if (!stmt.isSetIfNotExists()) {
+                    ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+                } else {
+                    LOG.info("create table[{}] which already exists", tableName);
+                    return;
+                }
             }
         } finally {
             unlock();
         }
 
         LOG.info("successfully create table[{}-{}]", tableName, tableId);
-        return;
     }
 
-    private Table createEsTable(Database db, CreateTableStmt stmt) throws DdlException {
+    private void createEsTable(Database db, CreateTableStmt stmt) throws DdlException {
         String tableName = stmt.getTableName();
 
         // create columns
@@ -4137,45 +4168,19 @@ public class Catalog {
             if (getDb(db.getFullName()) == null) {
                 throw new DdlException("database has been dropped when creating table");
             }
-            if (!db.createTableWithLock(esTable, false, stmt.isSetIfNotExists())) {
-                ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+            if (!db.createTableWithLock(esTable, false)) {
+                if (!stmt.isSetIfNotExists()) {
+                    ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+                } else {
+                    LOG.info("create table[{}] which already exists", tableName);
+                    return;
+                }
             }
         } finally {
             unlock();
         }
 
         LOG.info("successfully create table{} with id {}", tableName, tableId);
-        return esTable;
-    }
-
-    private void createBrokerTable(Database db, CreateTableStmt stmt) throws DdlException {
-        String tableName = stmt.getTableName();
-
-        List<Column> columns = stmt.getColumns();
-
-        long tableId = Catalog.getCurrentCatalog().getNextId();
-        BrokerTable brokerTable = new BrokerTable(tableId, tableName, columns, stmt.getProperties());
-        brokerTable.setComment(stmt.getComment());
-        brokerTable.setBrokerProperties(stmt.getExtProperties());
-
-        // check database exists again, because database can be dropped when creating table
-        if (!tryLock(false)) {
-            throw new DdlException("Failed to acquire catalog lock. Try again");
-        }
-        try {
-            if (getDb(db.getFullName()) == null) {
-                throw new DdlException("database has been dropped when creating table");
-            }
-            if (!db.createTableWithLock(brokerTable, false, stmt.isSetIfNotExists())) {
-                ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
-            }
-        } finally {
-            unlock();
-        }
-
-        LOG.info("successfully create table[{}-{}]", tableName, tableId);
-
-        return;
     }
 
     private void createHiveTable(Database db, CreateTableStmt stmt) throws DdlException {
@@ -4199,8 +4204,13 @@ public class Catalog {
             if (getDb(db.getFullName()) == null) {
                 throw new DdlException("database has been dropped when creating table");
             }
-            if (!db.createTableWithLock(hiveTable, false, stmt.isSetIfNotExists())) {
-                ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+            if (!db.createTableWithLock(hiveTable, false)) {
+                if (!stmt.isSetIfNotExists()) {
+                    ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+                } else {
+                    LOG.info("create table[{}] which already exists", tableName);
+                    return;
+                }
             }
         } finally {
             unlock();
@@ -4210,7 +4220,8 @@ public class Catalog {
     }
 
     public static void getDdlStmt(Table table, List<String> createTableStmt, List<String> addPartitionStmt,
-                                  List<String> createRollupStmt, boolean separatePartition, boolean hidePassword) {
+                                  List<String> createRollupStmt, boolean separatePartition,
+                                  boolean hidePassword) {
         getDdlStmt(null, table, createTableStmt, addPartitionStmt, createRollupStmt, separatePartition, hidePassword);
     }
 
@@ -4248,7 +4259,16 @@ public class Catalog {
             }
             // There MUST BE 2 space in front of each column description line
             // sqlalchemy requires this to parse SHOW CREATE TAEBL stmt.
-            sb.append("  ").append(column.toSql());
+            if (table.getType() == TableType.OLAP || table.getType() == TableType.OLAP_EXTERNAL) {
+                OlapTable olapTable = (OlapTable) table;
+                if (olapTable.getKeysType() == KeysType.PRIMARY_KEYS) {
+                    sb.append("  ").append(column.toSqlWithoutAggregateTypeName());
+                } else {
+                    sb.append("  ").append(column.toSql());
+                }
+            } else {
+                sb.append("  ").append(column.toSql());
+            }
         }
         if (table.getType() == TableType.OLAP || table.getType() == TableType.OLAP_EXTERNAL) {
             OlapTable olapTable = (OlapTable) table;
@@ -4350,7 +4370,7 @@ public class Catalog {
                 sb.append("\"port\" = \"").append(externalOlapTable.getSourceTablePort()).append("\",\n");
                 sb.append("\"user\" = \"").append(externalOlapTable.getSourceTableUser()).append("\",\n");
                 sb.append("\"password\" = \"").append(hidePassword ? "" : externalOlapTable.getSourceTablePassword())
-                                              .append("\",\n");
+                        .append("\",\n");
                 sb.append("\"database\" = \"").append(externalOlapTable.getSourceTableDbName()).append("\",\n");
                 sb.append("\"table\" = \"").append(externalOlapTable.getSourceTableName()).append("\"\n");
             }
@@ -4494,7 +4514,7 @@ public class Catalog {
 
     public void replayCreateTable(String dbName, Table table) {
         Database db = this.fullNameToDb.get(dbName);
-        db.createTableWithLock(table, true, false);
+        db.createTableWithLock(table, true);
 
         if (!isCheckpointThread()) {
             // add to inverted index
@@ -5953,8 +5973,13 @@ public class Catalog {
             if (getDb(db.getFullName()) == null) {
                 throw new DdlException("database has been dropped when creating view");
             }
-            if (!db.createTableWithLock(newView, false, stmt.isSetIfNotExists())) {
-                ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+            if (!db.createTableWithLock(newView, false)) {
+                if (!stmt.isSetIfNotExists()) {
+                    ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+                } else {
+                    LOG.info("create table[{}] which already exists", tableName);
+                    return;
+                }
             }
         } finally {
             unlock();
@@ -6602,12 +6627,12 @@ public class Catalog {
             request.setPartitions(partitions);
             try {
                 TRefreshTableResponse response = FrontendServiceProxy.call(thriftAddress, timeout,
-                            new FrontendServiceProxy.MethodCallable<TRefreshTableResponse>() {
-                                @Override
-                                public TRefreshTableResponse invoke(FrontendService.Client client) throws TException {
-                                    return client.refreshTable(request);
-                                }
-                            });
+                        new FrontendServiceProxy.MethodCallable<TRefreshTableResponse>() {
+                            @Override
+                            public TRefreshTableResponse invoke(FrontendService.Client client) throws TException {
+                                return client.refreshTable(request);
+                            }
+                        });
                 return response.getStatus();
             } catch (Exception e) {
                 LOG.warn("call fe {} refreshTable rpc method failed", thriftAddress, e);
@@ -7060,7 +7085,7 @@ public class Catalog {
             try {
                 TSetConfigResponse response = FrontendServiceProxy
                         .call(new TNetworkAddress(fe.getHost(),
-                                fe.getRpcPort()),
+                                        fe.getRpcPort()),
                                 timeout,
                                 new FrontendServiceProxy.MethodCallable<TSetConfigResponse>() {
                                     @Override
@@ -7425,5 +7450,6 @@ public class Catalog {
     public void setImageJournalId(long imageJournalId) {
         this.imageJournalId = imageJournalId;
     }
+
 }
 

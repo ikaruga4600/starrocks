@@ -37,6 +37,8 @@
 #include "storage/olap_common.h"
 #include "storage/row_block2.h"
 #include "storage/row_cursor.h"
+#include "storage/rowset/segment_v2/column_iterator.h"
+#include "storage/rowset/segment_v2/column_reader.h"
 #include "storage/rowset/segment_v2/segment_iterator.h"
 #include "storage/rowset/segment_v2/segment_writer.h"
 #include "storage/tablet_schema.h"
@@ -67,22 +69,12 @@ static void DefaultIntGenerator(size_t rid, int cid, int block_id, RowCursorCell
     *(int*)cell.mutable_cell_ptr() = rid * 10 + cid;
 }
 
-static bool column_contains_index(ColumnMetaPB column_meta, ColumnIndexTypePB type) {
-    for (int i = 0; i < column_meta.indexes_size(); ++i) {
-        if (column_meta.indexes(i).type() == type) {
-            return true;
-        }
-    }
-    return false;
-}
-
 class SegmentReaderWriterTest : public ::testing::Test {
 protected:
     void SetUp() override {
         _env = new EnvMemory();
         _block_mgr = new fs::FileBlockManager(_env, fs::BlockManagerOptions());
         ASSERT_TRUE(_env->create_dir(kSegmentDir).ok());
-        _mem_tracker = std::make_unique<MemTracker>();
         _page_cache_mem_tracker = std::make_unique<MemTracker>();
         StoragePageCache::create_global_cache(_page_cache_mem_tracker.get(), 1000000000);
     }
@@ -91,7 +83,6 @@ protected:
         delete _block_mgr;
         delete _env;
         StoragePageCache::release_global_cache();
-        _mem_tracker->release(_mem_tracker->consumption());
     }
 
     TabletSchema create_schema(const std::vector<TabletColumn>& columns, int num_short_key_columns = -1) {
@@ -136,7 +127,7 @@ protected:
         uint64_t file_size, index_size;
         ASSERT_OK(writer.finalize(&file_size, &index_size));
 
-        *res = *Segment::open(_mem_tracker.get(), _block_mgr, filename, 0, &query_schema);
+        *res = *Segment::open(_block_mgr, filename, 0, &query_schema);
         ASSERT_EQ(nrows, (*res)->num_rows());
     }
 
@@ -144,7 +135,6 @@ protected:
 
     EnvMemory* _env = nullptr;
     fs::FileBlockManager* _block_mgr = nullptr;
-    std::unique_ptr<MemTracker> _mem_tracker = nullptr;
     std::unique_ptr<MemTracker> _page_cache_mem_tracker = nullptr;
 };
 
@@ -154,7 +144,6 @@ TEST_F(SegmentReaderWriterTest, normal) {
 
     SegmentWriterOptions opts;
     opts.num_rows_per_block = 10;
-    opts.mem_tracker = _mem_tracker.get();
 
     shared_ptr<Segment> segment;
     build_segment(opts, tablet_schema, tablet_schema, 4096, DefaultIntGenerator, &segment);
@@ -306,7 +295,6 @@ TEST_F(SegmentReaderWriterTest, LateMaterialization) {
     {
         shared_ptr<Segment> segment;
         SegmentWriterOptions opts;
-        opts.mem_tracker = _mem_tracker.get();
         build_segment(opts, tablet_schema, tablet_schema, 100, data_gen, &segment);
         {
             // lazy enabled when predicate is subset of returned columns:
@@ -385,9 +373,8 @@ TEST_F(SegmentReaderWriterTest, LateMaterialization) {
         tablet_schema = create_schema({create_int_key(1, true, false, true), create_int_value(2)});
         shared_ptr<Segment> segment;
         SegmentWriterOptions write_opts;
-        write_opts.mem_tracker = _mem_tracker.get();
         build_segment(write_opts, tablet_schema, tablet_schema, 100, data_gen, &segment);
-        ASSERT_TRUE(column_contains_index(segment->footer().columns(0), BITMAP_INDEX));
+        ASSERT_TRUE(segment->column(0)->has_bitmap_index());
         {
             // lazy disabled when all predicates are removed by bitmap index:
             // select c1, c2 where c2 = 30;
@@ -422,7 +409,6 @@ TEST_F(SegmentReaderWriterTest, TestIndex) {
 
     SegmentWriterOptions opts;
     opts.num_rows_per_block = 10;
-    opts.mem_tracker = _mem_tracker.get();
 
     std::shared_ptr<Segment> segment;
     // 0, 1, 2, 3
@@ -624,7 +610,6 @@ TEST_F(SegmentReaderWriterTest, estimate_segment_size) {
 
     SegmentWriterOptions opts;
     opts.num_rows_per_block = num_rows_per_block;
-    opts.mem_tracker = _mem_tracker.get();
 
     std::string fname = dname + "/int_case";
     std::unique_ptr<fs::WritableBlock> wblock;
@@ -675,7 +660,6 @@ TEST_F(SegmentReaderWriterTest, TestDefaultValueColumn) {
 
         std::shared_ptr<Segment> segment;
         SegmentWriterOptions opts;
-        opts.mem_tracker = _mem_tracker.get();
         build_segment(opts, build_schema, query_schema, 4096, DefaultIntGenerator, &segment);
 
         Schema schema(query_schema);
@@ -727,7 +711,6 @@ TEST_F(SegmentReaderWriterTest, TestDefaultValueColumn) {
 
         std::shared_ptr<Segment> segment;
         SegmentWriterOptions opts;
-        opts.mem_tracker = _mem_tracker.get();
         build_segment(opts, build_schema, query_schema, 4096, DefaultIntGenerator, &segment);
 
         Schema schema(query_schema);
@@ -774,8 +757,7 @@ TEST_F(SegmentReaderWriterTest, TestDefaultValueColumn) {
 
 TEST_F(SegmentReaderWriterTest, TestStringDict) {
     size_t num_rows_per_block = 10;
-    MemTracker tracker;
-    MemPool pool(&tracker);
+    MemPool pool;
 
     std::shared_ptr<TabletSchema> tablet_schema(new TabletSchema());
     tablet_schema->_num_key_columns = 3;
@@ -788,7 +770,6 @@ TEST_F(SegmentReaderWriterTest, TestStringDict) {
 
     SegmentWriterOptions opts;
     opts.num_rows_per_block = num_rows_per_block;
-    opts.mem_tracker = _mem_tracker.get();
 
     std::string fname = kSegmentDir + "/string_case";
     std::unique_ptr<fs::WritableBlock> wblock;
@@ -820,7 +801,7 @@ TEST_F(SegmentReaderWriterTest, TestStringDict) {
     ASSERT_OK(writer.finalize(&file_size, &index_size));
 
     {
-        auto segment = *Segment::open(_mem_tracker.get(), _block_mgr, fname, 0, tablet_schema.get());
+        auto segment = *Segment::open(_block_mgr, fname, 0, tablet_schema.get());
         ASSERT_EQ(4096, segment->num_rows());
         Schema schema(*tablet_schema);
         OlapReaderStatistics stats;
@@ -1007,11 +988,10 @@ TEST_F(SegmentReaderWriterTest, TestBitmapPredicate) {
                            create_int_value(3), create_int_value(4)});
 
     SegmentWriterOptions opts;
-    opts.mem_tracker = _mem_tracker.get();
     shared_ptr<Segment> segment;
     build_segment(opts, tablet_schema, tablet_schema, 4096, DefaultIntGenerator, &segment);
-    ASSERT_TRUE(column_contains_index(segment->footer().columns(0), BITMAP_INDEX));
-    ASSERT_TRUE(column_contains_index(segment->footer().columns(1), BITMAP_INDEX));
+    ASSERT_TRUE(segment->column(0)->has_bitmap_index());
+    ASSERT_TRUE(segment->column(1)->has_bitmap_index());
 
     {
         Schema schema(tablet_schema);
@@ -1142,17 +1122,15 @@ TEST_F(SegmentReaderWriterTest, TestBloomFilterIndexUniqueModel) {
 
     // for not base segment
     SegmentWriterOptions opts1;
-    opts1.mem_tracker = _mem_tracker.get();
     shared_ptr<Segment> seg1;
     build_segment(opts1, schema, schema, 100, DefaultIntGenerator, &seg1);
-    ASSERT_TRUE(column_contains_index(seg1->footer().columns(3), BLOOM_FILTER_INDEX));
+    ASSERT_TRUE(seg1->column(3)->has_bloom_filter_index());
 
     // for base segment
     SegmentWriterOptions opts2;
-    opts2.mem_tracker = _mem_tracker.get();
     shared_ptr<Segment> seg2;
     build_segment(opts2, schema, schema, 100, DefaultIntGenerator, &seg2);
-    ASSERT_TRUE(column_contains_index(seg2->footer().columns(3), BLOOM_FILTER_INDEX));
+    ASSERT_TRUE(seg2->column(3)->has_bloom_filter_index());
 }
 
 } // namespace segment_v2

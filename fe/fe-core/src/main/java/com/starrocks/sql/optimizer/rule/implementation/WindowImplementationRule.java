@@ -27,8 +27,10 @@ public class WindowImplementationRule extends ImplementationRule {
                 logical.getPartitionExpressions(),
                 logical.getOrderByElements(),
                 logical.getAnalyticWindow(),
+                logical.getEnforceSortColumns(),
                 logical.getLimit(),
-                logical.getPredicate());
+                logical.getPredicate(),
+                logical.getProjection());
 
         return Lists.newArrayList(OptExpression.create(physical, input.getInputs()));
     }

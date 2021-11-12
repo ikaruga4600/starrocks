@@ -24,6 +24,7 @@
 
 #include "env/env.h"
 #include "gen_cpp/olap_file.pb.h"
+#include "runtime/global_dicts.h"
 #include "storage/fs/fs_util.h"
 #include "storage/vectorized/type_utils.h"
 
@@ -41,11 +42,6 @@ public:
 
     RowsetWriterContext(const RowsetWriterContext&) = default;
     RowsetWriterContext& operator=(const RowsetWriterContext&) = default;
-
-    /*
-     * The fields were arranged based on size to reduce sizeof(RowsetWriterContext).
-     */
-    MemTracker* mem_tracker = nullptr;
 
     std::string rowset_path_prefix;
 
@@ -79,6 +75,8 @@ public:
     DataFormatVersion memory_format_version;
     // On-disk data format.
     DataFormatVersion storage_format_version;
+
+    vectorized::GlobalDictByNameMaps* global_dicts = nullptr;
 };
 
 } // namespace starrocks

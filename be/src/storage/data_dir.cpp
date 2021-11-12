@@ -62,10 +62,9 @@ namespace starrocks {
 static const char* const kMtabPath = "/etc/mtab";
 static const char* const kTestFilePath = "/.testfile";
 
-DataDir::DataDir(std::string path, int64_t capacity_bytes, TStorageMedium::type storage_medium,
-                 TabletManager* tablet_manager, TxnManager* txn_manager)
+DataDir::DataDir(std::string path, TStorageMedium::type storage_medium, TabletManager* tablet_manager,
+                 TxnManager* txn_manager)
         : _path(std::move(path)),
-          _capacity_bytes(capacity_bytes),
           _available_bytes(0),
           _disk_capacity_bytes(0),
           _storage_medium(storage_medium),
@@ -94,7 +93,8 @@ Status DataDir::init(bool read_only) {
 
     RETURN_IF_ERROR_WITH_WARN(update_capacity(), "update_capacity failed");
     RETURN_IF_ERROR_WITH_WARN(_init_cluster_id(), "_init_cluster_id failed");
-    RETURN_IF_ERROR_WITH_WARN(_init_capacity(), "_init_capacity failed");
+    RETURN_IF_ERROR_WITH_WARN(_init_data_dir(), "_init_data_dir failed");
+    RETURN_IF_ERROR_WITH_WARN(_init_tmp_dir(), "_init_tmp_dir failed");
     RETURN_IF_ERROR_WITH_WARN(_init_file_system(), "_init_file_system failed");
     RETURN_IF_ERROR_WITH_WARN(_init_meta(read_only), "_init_meta failed");
 
@@ -178,23 +178,21 @@ Status DataDir::_read_cluster_id(const std::string& path, int32_t* cluster_id) {
     return Status::OK();
 }
 
-Status DataDir::_init_capacity() {
-    int64_t disk_capacity = std::filesystem::space(_path).capacity;
-    if (_capacity_bytes == -1) {
-        _capacity_bytes = disk_capacity;
-    } else if (_capacity_bytes > disk_capacity) {
-        RETURN_IF_ERROR_WITH_WARN(Status::InvalidArgument(strings::Substitute(
-                                          "root path $0's capacity $1 should not larger than disk capacity $2", _path,
-                                          _capacity_bytes, disk_capacity)),
-                                  "init capacity failed");
-    }
-
+Status DataDir::_init_data_dir() {
     std::string data_path = _path + DATA_PREFIX;
     if (!FileUtils::check_exist(data_path) && !FileUtils::create_dir(data_path).ok()) {
         RETURN_IF_ERROR_WITH_WARN(Status::IOError(strings::Substitute("failed to create data root path $0", data_path)),
                                   "check_exist failed");
     }
+    return Status::OK();
+}
 
+Status DataDir::_init_tmp_dir() {
+    std::string tmp_path = _path + TMP_PREFIX;
+    if (!FileUtils::check_exist(tmp_path) && !FileUtils::create_dir(tmp_path).ok()) {
+        RETURN_IF_ERROR_WITH_WARN(Status::IOError(strings::Substitute("failed to create tmp path $0", tmp_path)),
+                                  "check_exist failed");
+    }
     return Status::OK();
 }
 
@@ -401,16 +399,19 @@ void DataDir::find_tablet_in_trash(int64_t tablet_id, std::vector<std::string>* 
             continue;
         }
         std::string tablet_path = sub_path + "/" + std::to_string(tablet_id);
-        bool exist = FileUtils::check_exist(tablet_path);
-        if (exist) {
+        if (FileUtils::check_exist(tablet_path)) {
             paths->emplace_back(std::move(tablet_path));
         }
     }
 }
 
 std::string DataDir::get_root_path_from_schema_hash_path_in_trash(const std::string& schema_hash_dir_in_trash) {
-    std::filesystem::path schema_hash_path_in_trash(schema_hash_dir_in_trash);
-    return schema_hash_path_in_trash.parent_path().parent_path().parent_path().parent_path().string();
+    return std::filesystem::path(schema_hash_dir_in_trash)
+            .parent_path()
+            .parent_path()
+            .parent_path()
+            .parent_path()
+            .string();
 }
 
 // TODO(ygl): deal with rowsets and tablets when load failed
@@ -496,8 +497,7 @@ OLAPStatus DataDir::load() {
     // 2. add visible rowset to tablet
     // ignore any errors when load tablet or rowset, because fe will repair them after report
     for (const auto& rowset_meta : dir_rowset_metas) {
-        TabletSharedPtr tablet =
-                _tablet_manager->get_tablet(rowset_meta->tablet_id(), rowset_meta->tablet_schema_hash());
+        TabletSharedPtr tablet = _tablet_manager->get_tablet(rowset_meta->tablet_id(), false);
         // tablet maybe dropped, but not drop related rowset meta
         if (tablet == nullptr) {
             // LOG(WARNING) << "could not find tablet id: " << rowset_meta->tablet_id()
@@ -507,9 +507,7 @@ OLAPStatus DataDir::load() {
         }
         RowsetSharedPtr rowset;
         OLAPStatus create_status =
-                RowsetFactory::create_rowset(_tablet_manager->tablet_meta_mem_tracker(), &tablet->tablet_schema(),
-                                             tablet->tablet_path(), rowset_meta, &rowset)
-                                .ok()
+                RowsetFactory::create_rowset(&tablet->tablet_schema(), tablet->tablet_path(), rowset_meta, &rowset).ok()
                         ? OLAP_SUCCESS
                         : OLAP_ERR_OTHER_ERROR;
         if (create_status != OLAP_SUCCESS) {
@@ -580,7 +578,7 @@ void DataDir::perform_path_gc_by_tablet() {
             LOG(WARNING) << "invalid tablet id " << tablet_id << " or schema hash " << schema_hash << ", path=" << path;
             continue;
         }
-        TabletSharedPtr tablet = _tablet_manager->get_tablet(tablet_id, schema_hash);
+        TabletSharedPtr tablet = _tablet_manager->get_tablet(tablet_id, true);
         if (tablet != nullptr) {
             // could find the tablet, then skip check it
             continue;
@@ -628,7 +626,7 @@ void DataDir::perform_path_gc_by_rowsetid() {
             RowsetId rowset_id;
             bool is_rowset_file = TabletManager::get_rowset_id_from_path(path, &rowset_id);
             if (is_rowset_file) {
-                TabletSharedPtr tablet = _tablet_manager->get_tablet(tablet_id, schema_hash);
+                TabletSharedPtr tablet = _tablet_manager->get_tablet(tablet_id, false);
                 if (tablet != nullptr) {
                     if (!tablet->check_rowset_id(rowset_id) &&
                         !StorageEngine::instance()->check_rowset_id_in_unused_rowsets(rowset_id)) {

@@ -19,7 +19,6 @@
 #include "runtime/descriptors.h"
 #include "runtime/dpp_sink_internal.h"
 #include "runtime/exec_env.h"
-#include "runtime/mem_tracker.h"
 #include "runtime/raw_value.h"
 #include "runtime/row_batch.h"
 #include "runtime/runtime_state.h"
@@ -41,11 +40,12 @@ public:
     // how much tuple data is getting accumulated before being sent; it only applies
     // when data is added via add_row() and not sent directly via send_batch().
     Channel(ExchangeSinkOperator* parent, const TNetworkAddress& brpc_dest, const TUniqueId& fragment_instance_id,
-            PlanNodeId dest_node_id)
+            PlanNodeId dest_node_id, size_t channel_id)
             : _parent(parent),
               _fragment_instance_id(fragment_instance_id),
               _dest_node_id(dest_node_id),
-              _brpc_dest_addr(brpc_dest) {}
+              _brpc_dest_addr(brpc_dest),
+              _channel_id(channel_id) {}
 
     // Initialize channel.
     // Returns OK if successful, error indication otherwise.
@@ -54,10 +54,15 @@ public:
     // Send one chunk to remote, this chunk may be batched in this channel.
     Status send_one_chunk(const vectorized::Chunk* chunk, bool eos);
 
+    // Send one chunk to remote, this chunk may be batched in this channel.
+    // When the chunk is sent really rather than bachend, *is_real_sent will
+    // be set to true.
+    Status send_one_chunk(const vectorized::Chunk* chunk, bool eos, bool* is_real_sent);
+
     // Channel will sent input request directly without batch it.
     // This function is only used when broadcast, because request can be reused
     // by all the channels.
-    Status send_chunk_request(PTransmitChunkParams* params, const butil::IOBuf& attachment);
+    Status send_chunk_request(PTransmitChunkParamsPtr chunk_request, const butil::IOBuf& attachment);
 
     // Used when doing shuffle.
     // This function will copy selective rows in chunks to batch.
@@ -92,12 +97,14 @@ private:
     TNetworkAddress _brpc_dest_addr;
 
     PUniqueId _finst_id;
+    PTransmitChunkParamsPtr _chunk_request;
 
     doris::PBackendService_Stub* _brpc_stub = nullptr;
 
     size_t _current_request_bytes = 0;
 
     bool _is_inited = false;
+    size_t _channel_id;
 };
 
 Status ExchangeSinkOperator::Channel::init(RuntimeState* state) {
@@ -144,15 +151,23 @@ Status ExchangeSinkOperator::Channel::add_rows_selective(vectorized::Chunk* chun
 }
 
 Status ExchangeSinkOperator::Channel::send_one_chunk(const vectorized::Chunk* chunk, bool eos) {
-    PTransmitChunkParams request;
-    request.set_allocated_finst_id(&_finst_id);
-    request.set_node_id(_dest_node_id);
-    request.set_sender_id(_parent->_sender_id);
-    request.set_be_number(_parent->_be_number);
+    bool is_real_sent = false;
+    return send_one_chunk(chunk, eos, &is_real_sent);
+}
+
+Status ExchangeSinkOperator::Channel::send_one_chunk(const vectorized::Chunk* chunk, bool eos, bool* is_real_sent) {
+    *is_real_sent = false;
+    if (_chunk_request == nullptr) {
+        _chunk_request = std::make_shared<PTransmitChunkParams>();
+        _chunk_request->set_allocated_finst_id(&_finst_id);
+        _chunk_request->set_node_id(_dest_node_id);
+        _chunk_request->set_sender_id(_parent->_sender_id);
+        _chunk_request->set_be_number(_parent->_be_number);
+    }
 
     // If chunk is not null, append it to request
     if (chunk != nullptr) {
-        auto pchunk = request.add_chunks();
+        auto pchunk = _chunk_request->add_chunks();
         RETURN_IF_ERROR(_parent->serialize_chunk(chunk, pchunk, &_is_first_chunk));
         _current_request_bytes += pchunk->data().size();
     }
@@ -160,34 +175,38 @@ Status ExchangeSinkOperator::Channel::send_one_chunk(const vectorized::Chunk* ch
     // Try to accumulate enough bytes before sending a RPC. When eos is true we should send
     // last packet
     if (_current_request_bytes > _parent->_request_bytes_threshold || eos) {
-        request.set_eos(eos);
-        TransmitChunkInfo info = {std::move(request), _brpc_stub};
+        _chunk_request->set_eos(eos);
+        butil::IOBuf attachment;
+        _parent->construct_brpc_attachment(_chunk_request, attachment);
+        TransmitChunkInfo info = {this->_channel_id, _brpc_stub, std::move(_chunk_request), attachment};
         _parent->_buffer->add_request(info);
         _current_request_bytes = 0;
-        // The original design is bad, we must release_finst_id here!
-        info.params.release_finst_id();
+        _chunk_request.reset();
+        *is_real_sent = true;
     }
 
     return Status::OK();
 }
 
-Status ExchangeSinkOperator::Channel::send_chunk_request(PTransmitChunkParams* params, const butil::IOBuf& attachment) {
-    params->set_allocated_finst_id(&_finst_id);
-    params->set_node_id(_dest_node_id);
-    params->set_sender_id(_parent->_sender_id);
-    params->set_be_number(_parent->_be_number);
+Status ExchangeSinkOperator::Channel::send_chunk_request(PTransmitChunkParamsPtr chunk_request,
+                                                         const butil::IOBuf& attachment) {
+    chunk_request->set_allocated_finst_id(&_finst_id);
+    chunk_request->set_node_id(_dest_node_id);
+    chunk_request->set_sender_id(_parent->_sender_id);
+    chunk_request->set_be_number(_parent->_be_number);
+    chunk_request->set_eos(false);
 
-    params->set_eos(false);
-    TransmitChunkInfo info = {std::move(*params), _brpc_stub};
+    TransmitChunkInfo info = {this->_channel_id, _brpc_stub, std::move(chunk_request), attachment};
     _parent->_buffer->add_request(info);
-
-    // The original design is bad, we must release_finst_id here!
-    info.params.release_finst_id();
 
     return Status::OK();
 }
 
 Status ExchangeSinkOperator::Channel::_close_internal() {
+    // no need to send EOS packet to pseudo destinations in scenarios of bucket shuffle join.
+    if (this->_finst_id.lo() == -1) {
+        return Status::OK();
+    }
     RETURN_IF_ERROR(send_one_chunk(_chunk != nullptr ? _chunk.get() : nullptr, true));
     return Status::OK();
 }
@@ -209,13 +228,19 @@ ExchangeSinkOperator::ExchangeSinkOperator(int32_t id, int32_t plan_node_id, con
           _dest_node_id(dest_node_id),
           _partition_expr_ctxs(partition_expr_ctxs) {
     std::map<int64_t, int64_t> fragment_id_to_channel_index;
+    // fragment_instance_id.lo == -1 indicates that the destination is pseudo for bucket shuffle join.
+    std::optional<std::shared_ptr<Channel>> pseudo_channel;
     for (const auto& destination : destinations) {
         const auto& fragment_instance_id = destination.fragment_instance_id;
-        if (fragment_id_to_channel_index.find(fragment_instance_id.lo) == fragment_id_to_channel_index.end()) {
-            _channels.emplace_back(new Channel(this, destination.brpc_server, fragment_instance_id, dest_node_id));
-            fragment_id_to_channel_index.insert({fragment_instance_id.lo, _channels.size() - 1});
+        if (fragment_instance_id.lo == -1 && pseudo_channel.has_value()) {
+            _channels.emplace_back(pseudo_channel.value());
         } else {
-            _channels.emplace_back(_channels[fragment_id_to_channel_index[fragment_instance_id.lo]]);
+            const auto channel_id = _channels.size();
+            _channels.emplace_back(
+                    new Channel(this, destination.brpc_server, fragment_instance_id, dest_node_id, channel_id));
+            if (fragment_instance_id.lo == -1) {
+                pseudo_channel = _channels.back();
+            }
         }
     }
 }
@@ -277,9 +302,6 @@ Status ExchangeSinkOperator::prepare(RuntimeState* state) {
         RETURN_IF_ERROR(_channel->init(state));
     }
 
-    // set eos for all channels.
-    // It will be set to true when closing.
-    _chunk_request.set_eos(false);
     _row_indexes.resize(config::vector_chunk_size);
 
     return Status::OK();
@@ -304,21 +326,36 @@ Status ExchangeSinkOperator::push_chunk(RuntimeState* state, const vectorized::C
         return Status::OK();
     }
     if (_part_type == TPartitionType::UNPARTITIONED || _channels.size() == 1) {
+        if (_chunk_request == nullptr) {
+            _chunk_request = std::make_shared<PTransmitChunkParams>();
+        }
+
         // We use sender request to avoid serialize chunk many times.
         // 1. create a new chunk PB to serialize
-        ChunkPB* pchunk = _chunk_request.add_chunks();
+        ChunkPB* pchunk = _chunk_request->add_chunks();
         // 2. serialize input chunk to pchunk
         RETURN_IF_ERROR(serialize_chunk(chunk.get(), pchunk, &_is_first_chunk, _channels.size()));
         _current_request_bytes += pchunk->data().size();
         // 3. if request bytes exceede the threshold, send current request
         if (_current_request_bytes > _request_bytes_threshold) {
             butil::IOBuf attachment;
-            // construct_brpc_attachment(&_chunk_request, &attachment);
+            construct_brpc_attachment(_chunk_request, attachment);
             for (const auto& channel : _channels) {
-                RETURN_IF_ERROR(channel->send_chunk_request(&_chunk_request, attachment));
+                PTransmitChunkParamsPtr copy = std::make_shared<PTransmitChunkParams>(*_chunk_request);
+                RETURN_IF_ERROR(channel->send_chunk_request(copy, attachment));
             }
             _current_request_bytes = 0;
-            _chunk_request.clear_chunks();
+            _chunk_request.reset();
+        }
+    } else if (_part_type == TPartitionType::RANDOM) {
+        // Round-robin batches among channels. Wait for the current channel to finish its
+        // rpc before overwriting its batch.
+        // 1. Get request of that channel
+        auto& channel = _channels[_curr_random_channel_idx];
+        bool real_sent = false;
+        RETURN_IF_ERROR(channel->send_one_chunk(chunk.get(), false, &real_sent));
+        if (real_sent) {
+            _curr_random_channel_idx = (_curr_random_channel_idx + 1) % _channels.size();
         }
     } else if (_part_type == TPartitionType::HASH_PARTITIONED ||
                _part_type == TPartitionType::BUCKET_SHFFULE_HASH_PARTITIONED) {
@@ -386,8 +423,19 @@ void ExchangeSinkOperator::finish(RuntimeState* state) {
     if (_is_finished) {
         return;
     }
-
     _is_finished = true;
+
+    if (_chunk_request != nullptr) {
+        butil::IOBuf attachment;
+        construct_brpc_attachment(_chunk_request, attachment);
+        for (const auto& channel : _channels) {
+            PTransmitChunkParamsPtr copy = std::make_shared<PTransmitChunkParams>(*_chunk_request);
+            channel->send_chunk_request(copy, attachment);
+        }
+        _current_request_bytes = 0;
+        _chunk_request.reset();
+    }
+
     for (auto& _channel : _channels) {
         _channel->close(state);
     }
@@ -401,7 +449,7 @@ Status ExchangeSinkOperator::close(RuntimeState* state) {
 
 Status ExchangeSinkOperator::serialize_chunk(const vectorized::Chunk* src, ChunkPB* dst, bool* is_first_chunk,
                                              int num_receivers) {
-    VLOG_ROW << "serializing " << src->num_rows() << " rows";
+    VLOG_ROW << "[ExchangeSinkOperator] serializing " << src->num_rows() << " rows";
     size_t uncompressed_size = 0;
     {
         SCOPED_TIMER(_serialize_batch_timer);
@@ -457,35 +505,39 @@ Status ExchangeSinkOperator::serialize_chunk(const vectorized::Chunk* src, Chunk
     return Status::OK();
 }
 
-void ExchangeSinkOperator::construct_brpc_attachment(PTransmitChunkParams* params, butil::IOBuf* attachment) {
-    for (int i = 0; i < params->chunks().size(); ++i) {
-        auto chunk = params->mutable_chunks(i);
+void ExchangeSinkOperator::construct_brpc_attachment(PTransmitChunkParamsPtr chunk_request, butil::IOBuf& attachment) {
+    for (int i = 0; i < chunk_request->chunks().size(); ++i) {
+        auto chunk = chunk_request->mutable_chunks(i);
         chunk->set_data_size(chunk->data().size());
-        attachment->append(chunk->data());
+        attachment.append(chunk->data());
         chunk->clear_data();
     }
 }
 
+ExchangeSinkOperatorFactory::ExchangeSinkOperatorFactory(int32_t id, int32_t plan_node_id,
+                                                         std::shared_ptr<SinkBuffer> buffer,
+                                                         TPartitionType::type part_type,
+                                                         const std::vector<TPlanFragmentDestination>& destinations,
+                                                         int sender_id, PlanNodeId dest_node_id,
+                                                         std::vector<ExprContext*> partition_expr_ctxs)
+        : OperatorFactory(id, "exchange_sink", plan_node_id),
+          _buffer(std::move(buffer)),
+          _part_type(part_type),
+          _destinations(destinations),
+          _sender_id(sender_id),
+          _dest_node_id(dest_node_id),
+          _partition_expr_ctxs(std::move(partition_expr_ctxs)) {}
+
 OperatorPtr ExchangeSinkOperatorFactory::create(int32_t degree_of_parallelism, int32_t driver_sequence) {
-    _buffer->set_sinker_number(degree_of_parallelism);
-    if (_part_type == TPartitionType::UNPARTITIONED || _destinations.size() == 1) {
-        return std::make_shared<ExchangeSinkOperator>(_id, _plan_node_id, _buffer, _part_type, _destinations,
-                                                      _sender_id, _dest_node_id, _partition_expr_ctxs);
-    } else if (_part_type == TPartitionType::HASH_PARTITIONED ||
-               _part_type == TPartitionType::BUCKET_SHFFULE_HASH_PARTITIONED) {
-        return std::make_shared<ExchangeSinkOperator>(_id, _plan_node_id, _buffer, _part_type, _destinations,
-                                                      _sender_id, _dest_node_id, _partition_expr_ctxs);
-    } else {
-        DCHECK(false) << " Shouldn't reach here!";
-        return nullptr;
-    }
+    return std::make_shared<ExchangeSinkOperator>(_id, _plan_node_id, _buffer, _part_type, _destinations, _sender_id,
+                                                  _dest_node_id, _partition_expr_ctxs);
 }
 
-Status ExchangeSinkOperatorFactory::prepare(RuntimeState* state, MemTracker* mem_tracker) {
+Status ExchangeSinkOperatorFactory::prepare(RuntimeState* state) {
     if (_part_type == TPartitionType::HASH_PARTITIONED ||
         _part_type == TPartitionType::BUCKET_SHFFULE_HASH_PARTITIONED) {
         RowDescriptor row_desc;
-        RETURN_IF_ERROR(Expr::prepare(_partition_expr_ctxs, state, row_desc, mem_tracker));
+        RETURN_IF_ERROR(Expr::prepare(_partition_expr_ctxs, state, row_desc));
         RETURN_IF_ERROR(Expr::open(_partition_expr_ctxs, state));
     }
     return Status::OK();

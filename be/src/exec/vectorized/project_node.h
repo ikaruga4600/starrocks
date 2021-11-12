@@ -4,6 +4,7 @@
 
 #include "column/vectorized_fwd.h"
 #include "exec/exec_node.h"
+#include "exprs/expr_context.h"
 #include "util/runtime_profile.h"
 
 namespace starrocks::vectorized {
@@ -40,6 +41,8 @@ private:
 
     RuntimeProfile::Counter* _expr_compute_timer = nullptr;
     RuntimeProfile::Counter* _common_sub_expr_compute_timer = nullptr;
+
+    DictOptimizeParser _dict_optimize_parser;
 };
 
 } // namespace starrocks::vectorized

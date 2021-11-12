@@ -64,8 +64,10 @@ set(EXEC_FILES
     vectorized/csv_scanner.cpp
     vectorized/tablet_scanner.cpp
     vectorized/olap_scan_node.cpp
+    vectorized/olap_scan_prepare.cpp
     vectorized/olap_meta_scanner.cpp
     vectorized/olap_meta_scan_node.cpp
+    vectorized/hash_joiner.cpp
     vectorized/hash_join_node.cpp
     vectorized/join_hash_map.cpp
     vectorized/topn_node.cpp
@@ -75,6 +77,7 @@ set(EXEC_FILES
     vectorized/cross_join_node.cpp
     vectorized/union_node.cpp
     vectorized/tablet_info.cpp
+    vectorized/except_hash_set.cpp
     vectorized/except_node.cpp
     vectorized/file_scanner.cpp
     vectorized/orc_scanner.cpp
@@ -84,6 +87,7 @@ set(EXEC_FILES
     vectorized/parquet_reader.cpp
     vectorized/file_scan_node.cpp
     vectorized/assert_num_rows_node.cpp
+    vectorized/intersect_hash_set.cpp
     vectorized/intersect_node.cpp
     vectorized/hdfs_scanner.cpp
     vectorized/hdfs_scanner_orc.cpp
@@ -136,8 +140,12 @@ set(EXEC_FILES
     pipeline/olap_chunk_source.cpp
     pipeline/pipeline_builder.cpp
     pipeline/project_operator.cpp
+    pipeline/dict_decode_operator.cpp
     pipeline/result_sink_operator.cpp
     pipeline/scan_operator.cpp
+    pipeline/select_operator.cpp
+    pipeline/crossjoin/cross_join_right_sink_operator.cpp
+    pipeline/crossjoin/cross_join_left_operator.cpp
     pipeline/sort/sort_sink_operator.cpp
     pipeline/sort/sort_source_operator.cpp
     pipeline/pipeline_driver_dispatcher.cpp
@@ -155,8 +163,23 @@ set(EXEC_FILES
     pipeline/aggregate/aggregate_distinct_blocking_source_operator.cpp
     pipeline/aggregate/aggregate_distinct_streaming_sink_operator.cpp
     pipeline/aggregate/aggregate_distinct_streaming_source_operator.cpp
+    pipeline/aggregate/repeat/repeat_operator.cpp
     pipeline/analysis/analytic_sink_operator.cpp
     pipeline/analysis/analytic_source_operator.cpp
+    pipeline/table_function_operator.cpp
+    pipeline/assert_num_rows_operator.cpp
+    pipeline/set/union_passthrough_operator.cpp
+    pipeline/set/union_const_source_operator.cpp
+    pipeline/hashjoin/hash_join_build_operator.cpp
+    pipeline/hashjoin/hash_join_probe_operator.cpp
+    pipeline/set/except_context.cpp
+    pipeline/set/except_build_sink_operator.cpp
+    pipeline/set/except_probe_sink_operator.cpp
+    pipeline/set/except_output_source_operator.cpp
+    pipeline/set/intersect_context.cpp
+    pipeline/set/intersect_build_sink_operator.cpp
+    pipeline/set/intersect_probe_sink_operator.cpp
+    pipeline/set/intersect_output_source_operator.cpp
 )
 
 set(EXEC_FILES

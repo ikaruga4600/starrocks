@@ -241,6 +241,11 @@ public class ScalarOperatorFunctionsTest {
         Assert.assertEquals("2001-01-09 13:04:05",
                 ScalarOperatorFunctions.dateFormat(testDate, ConstantOperator.createVarchar("yyyy-MM-dd HH:mm:ss"))
                         .getVarchar());
+
+        Assert.assertEquals("2001-01-09",
+                ScalarOperatorFunctions.dateFormat(ConstantOperator.createDate(LocalDateTime.of(2001, 1, 9, 13, 4, 5)),
+                        ConstantOperator.createVarchar("%Y-%m-%d"))
+                        .getVarchar());
     }
 
     @Test
@@ -609,18 +614,9 @@ public class ScalarOperatorFunctionsTest {
     }
 
     @Test
-    public void ifNull() {
-        ConstantOperator date = ConstantOperator.createDatetime(LocalDateTime.of(2000, 10, 21, 12, 0));
-        ConstantOperator value = ConstantOperator.createNull(Type.DATE);
-        ConstantOperator result = ScalarOperatorFunctions.ifNull(value, date);
-
-        assertEquals(date, result);
-    }
-
-    @Test
     public void fromUnixTime2() throws AnalysisException {
         ConstantOperator date =
                 ScalarOperatorFunctions.fromUnixTime(O_INT_10, ConstantOperator.createVarchar("%Y-%m-%d %H:%i:%s"));
-        assertEquals("1970-01-01 08:00:10", date.toString());
+        assertTrue(date.toString().matches("1970-01-01 0.*:00:10"));
     }
 }

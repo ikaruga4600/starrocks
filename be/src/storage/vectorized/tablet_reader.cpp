@@ -22,7 +22,7 @@
 namespace starrocks::vectorized {
 
 TabletReader::TabletReader(TabletSharedPtr tablet, const Version& version, Schema schema)
-        : ChunkIterator(std::move(schema)), _tablet(tablet), _version(version), _mempool(&_memtracker) {
+        : ChunkIterator(std::move(schema)), _tablet(tablet), _version(version) {
     _delete_predicates_version = version;
 }
 
@@ -35,9 +35,8 @@ void TabletReader::close() {
 }
 
 Status TabletReader::prepare() {
-    _tablet->obtain_header_rdlock();
+    std::shared_lock l(_tablet->get_header_lock());
     auto st = _tablet->capture_consistent_rowsets(_version, &_rowsets);
-    _tablet->release_header_lock();
     return st;
 }
 
@@ -192,7 +191,7 @@ Status TabletReader::_init_collector(const TabletReaderParams& params) {
     }
 
     if (_collect_iter != nullptr) {
-        RETURN_IF_ERROR(_collect_iter->init_res_schema(*params.global_dictmaps));
+        RETURN_IF_ERROR(_collect_iter->init_encoded_schema(*params.global_dictmaps));
     }
 
     return Status::OK();
@@ -208,8 +207,7 @@ Status TabletReader::_init_predicates(const TabletReaderParams& params) {
 Status TabletReader::_init_delete_predicates(const TabletReaderParams& params, DeletePredicates* dels) {
     PredicateParser pred_parser(_tablet->tablet_schema());
 
-    _tablet->obtain_header_rdlock();
-
+    std::shared_lock header_lock(_tablet->get_header_lock());
     for (const DeletePredicatePB& pred_pb : _tablet->delete_predicates()) {
         if (pred_pb.version() > _delete_predicates_version.second) {
             continue;
@@ -220,7 +218,6 @@ Status TabletReader::_init_delete_predicates(const TabletReaderParams& params, D
             TCondition cond;
             if (!DeleteHandler::parse_condition(pred_pb.sub_predicates(i), &cond)) {
                 LOG(WARNING) << "invalid delete condition: " << pred_pb.sub_predicates(i) << "]";
-                _tablet->release_header_lock();
                 return Status::InternalError("invalid delete condition string");
             }
             size_t idx = _tablet->tablet_schema().field_index(cond.column_name);
@@ -228,7 +225,7 @@ Status TabletReader::_init_delete_predicates(const TabletReaderParams& params, D
                 LOG(WARNING) << "ignore delete condition of non-key column: " << pred_pb.sub_predicates(i);
                 continue;
             }
-            ColumnPredicate* pred = pred_parser.parse(cond);
+            ColumnPredicate* pred = pred_parser.parse_thrift_cond(cond);
             if (pred == nullptr) {
                 LOG(WARNING) << "failed to parse delete condition.column_name[" << cond.column_name
                              << "], condition_op[" << cond.condition_op << "], condition_values["
@@ -252,7 +249,7 @@ Status TabletReader::_init_delete_predicates(const TabletReaderParams& params, D
             for (const auto& value : in_predicate.values()) {
                 cond.condition_values.push_back(value);
             }
-            ColumnPredicate* pred = pred_parser.parse(cond);
+            ColumnPredicate* pred = pred_parser.parse_thrift_cond(cond);
             if (pred == nullptr) {
                 LOG(WARNING) << "failed to parse delete condition.column_name[" << cond.column_name
                              << "], condition_op[" << cond.condition_op << "], condition_values["
@@ -267,7 +264,6 @@ Status TabletReader::_init_delete_predicates(const TabletReaderParams& params, D
         dels->add(pred_pb.version(), conjunctions);
     }
 
-    _tablet->release_header_lock();
     return Status::OK();
 }
 

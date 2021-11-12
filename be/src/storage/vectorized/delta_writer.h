@@ -32,17 +32,16 @@ struct WriteRequest {
     TupleDescriptor* tuple_desc;
     // slots are in order of tablet's schema
     const std::vector<SlotDescriptor*>* slots;
+    vectorized::GlobalDictByNameMaps* global_dicts = nullptr;
 };
 
 // Writer for a particular (load, index, tablet).
 // This class is NOT thread-safe, external synchronization is required.
 class DeltaWriter {
 public:
-    static Status open(WriteRequest* req, MemTracker* mem_tracker, DeltaWriter** writer);
+    static Status open(WriteRequest* req, MemTracker* mem_tracker, std::shared_ptr<DeltaWriter>* writer);
 
     ~DeltaWriter();
-
-    Status init();
 
     Status write(Chunk* chunk, const uint32_t* indexes, uint32_t from, uint32_t size);
 
@@ -68,6 +67,8 @@ public:
 
 private:
     DeltaWriter(WriteRequest* req, MemTracker* parent, StorageEngine* storage_engine);
+
+    Status _init();
 
     // push a full memtable to flush executor
     Status _flush_memtable_async();

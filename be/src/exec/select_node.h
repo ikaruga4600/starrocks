@@ -36,11 +36,14 @@ class TupleRow;
 class SelectNode : public ExecNode {
 public:
     SelectNode(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs);
+    ~SelectNode();
 
     Status prepare(RuntimeState* state) override;
     Status open(RuntimeState* state) override;
     Status get_next(RuntimeState* state, ChunkPtr* chunk, bool* eos) override;
     Status close(RuntimeState* state) override;
+    std::vector<std::shared_ptr<pipeline::OperatorFactory>> decompose_to_pipeline(
+            pipeline::PipelineBuilderContext* context) override;
 
 private:
     // true if last get_next() call on child signalled eos

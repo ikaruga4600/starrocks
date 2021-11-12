@@ -41,8 +41,7 @@ BinaryDictPageBuilder::BinaryDictPageBuilder(const PageBuilderOptions& options)
           _finished(false),
           _data_page_builder(nullptr),
           _dict_builder(nullptr),
-          _encoding_type(DICT_ENCODING),
-          _pool(&_tracker) {
+          _encoding_type(DICT_ENCODING) {
     // initially use DICT_ENCODING
     _data_page_builder = std::make_unique<BitshufflePageBuilder<OLAP_FIELD_TYPE_INT>>(options);
     _data_page_builder->reserve_head(BINARY_DICT_PAGE_HEADER_SIZE);
@@ -152,6 +151,15 @@ Status BinaryDictPageBuilder::get_last_value(void* value) const {
     RETURN_IF_ERROR(_data_page_builder->get_last_value(&value_code));
     *reinterpret_cast<Slice*>(value) = _dict_builder->get_value(value_code);
     return Status::OK();
+}
+
+bool BinaryDictPageBuilder::is_valid_global_dict(const vectorized::GlobalDictMap* global_dict) const {
+    for (auto it = _dictionary.begin(); it != _dictionary.end(); ++it) {
+        if (auto iter = global_dict->find(it->first); iter == global_dict->end()) {
+            return false;
+        }
+    }
+    return true;
 }
 
 template <FieldType Type>

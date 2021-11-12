@@ -6,8 +6,7 @@
 
 namespace starrocks {
 
-Aggregator::Aggregator(const TPlanNode& tnode, const RowDescriptor& child_row_desc)
-        : _tnode(tnode), _child_row_desc(child_row_desc) {}
+Aggregator::Aggregator(const TPlanNode& tnode) : _tnode(tnode) {}
 
 Status Aggregator::open(RuntimeState* state) {
     RETURN_IF_ERROR(Expr::open(_group_by_expr_ctxs, state));
@@ -18,11 +17,11 @@ Status Aggregator::open(RuntimeState* state) {
     return Status::OK();
 }
 
-Status Aggregator::prepare(RuntimeState* state, ObjectPool* pool, MemTracker* mem_tracker, MemTracker* expr_mem_tracker,
-                           RuntimeProfile* runtime_profile) {
+Status Aggregator::prepare(RuntimeState* state, ObjectPool* pool, RuntimeProfile* runtime_profile,
+                           MemTracker* mem_tracker) {
     _pool = pool;
-    _mem_tracker = mem_tracker;
     _runtime_profile = runtime_profile;
+    _mem_tracker = mem_tracker;
 
     _limit = _tnode.limit;
     _needs_finalize = _tnode.agg_node.need_finalize;
@@ -32,6 +31,7 @@ Status Aggregator::prepare(RuntimeState* state, ObjectPool* pool, MemTracker* me
 
     _rows_returned_counter = ADD_COUNTER(_runtime_profile, "RowsReturned", TUnit::UNIT);
 
+    RETURN_IF_ERROR(Expr::create_expr_trees(_pool, _tnode.conjuncts, &_conjunct_ctxs));
     RETURN_IF_ERROR(Expr::create_expr_trees(_pool, _tnode.agg_node.grouping_exprs, &_group_by_expr_ctxs));
     // add profile attributes
     if (_tnode.agg_node.__isset.sql_grouping_keys) {
@@ -174,13 +174,15 @@ Status Aggregator::prepare(RuntimeState* state, ObjectPool* pool, MemTracker* me
     _output_tuple_desc = state->desc_tbl().get_tuple_descriptor(_output_tuple_id);
     DCHECK_EQ(_intermediate_tuple_desc->slots().size(), _output_tuple_desc->slots().size());
 
-    RETURN_IF_ERROR(Expr::prepare(_group_by_expr_ctxs, state, _child_row_desc, expr_mem_tracker));
+    // create an empty RowDescriptor, and it will be removed sooner or later
+    RowDescriptor child_row_desc;
+    RETURN_IF_ERROR(Expr::prepare(_group_by_expr_ctxs, state, child_row_desc));
 
     for (const auto& ctx : _agg_expr_ctxs) {
-        RETURN_IF_ERROR(Expr::prepare(ctx, state, _child_row_desc, expr_mem_tracker));
+        RETURN_IF_ERROR(Expr::prepare(ctx, state, child_row_desc));
     }
 
-    _mem_pool = std::make_unique<MemPool>(_mem_tracker);
+    _mem_pool = std::make_unique<MemPool>();
 
     // Initial for FunctionContext of every aggregate functions
     for (int i = 0; i < _agg_fn_ctxs.size(); ++i) {
@@ -237,9 +239,6 @@ Status Aggregator::close(RuntimeState* state) {
 
         _mem_pool->free_all();
     }
-
-    _mem_tracker->release(_last_agg_func_memory_usage);
-    _mem_tracker->release(_last_ht_memory_usage);
 
     Expr::close(_group_by_expr_ctxs, state);
     for (const auto& i : _agg_expr_ctxs) {
@@ -459,35 +458,6 @@ void Aggregator::output_chunk_by_streaming_with_selection(vectorized::ChunkPtr* 
     output_chunk_by_streaming(chunk);
 }
 
-Status Aggregator::check_hash_map_memory_usage(RuntimeState* state) {
-    if ((_num_input_rows & memory_check_batch_size) < config::vector_chunk_size) {
-        int64_t delta_memory_usage = static_cast<int64_t>(_hash_map_variant.memory_usage()) - _last_ht_memory_usage;
-        _mem_tracker->consume(delta_memory_usage);
-        _last_ht_memory_usage = _hash_map_variant.memory_usage();
-
-        int64_t agg_func_memory_usage = 0;
-        for (auto& _agg_fn_ctx : _agg_fn_ctxs) {
-            agg_func_memory_usage += _agg_fn_ctx->impl()->mem_usage();
-        }
-        _mem_tracker->consume(agg_func_memory_usage - _last_agg_func_memory_usage);
-        _last_agg_func_memory_usage = agg_func_memory_usage;
-
-        RETURN_IF_ERROR(state->check_query_state("Aggregation Node"));
-    }
-    return Status::OK();
-}
-
-Status Aggregator::check_hash_set_memory_usage(RuntimeState* state) {
-    if ((_num_input_rows & memory_check_batch_size) < config::vector_chunk_size) {
-        int64_t delta_memory_usage = static_cast<int64_t>(_hash_set_variant.memory_usage()) - _last_ht_memory_usage;
-        _mem_tracker->consume(delta_memory_usage);
-        _last_ht_memory_usage = _hash_set_variant.memory_usage();
-
-        RETURN_IF_ERROR(state->check_query_state("Aggregation Node"));
-    }
-    return Status::OK();
-}
-
 #define CONVERT_TO_TWO_LEVEL(DST, SRC)                                                             \
     if (_hash_map_variant.type == vectorized::HashMapVariant::Type::SRC) {                         \
         _hash_map_variant.DST = std::make_unique<decltype(_hash_map_variant.DST)::element_type>(); \
@@ -500,7 +470,7 @@ Status Aggregator::check_hash_set_memory_usage(RuntimeState* state) {
     }
 
 void Aggregator::try_convert_to_two_level_map() {
-    if (_last_ht_memory_usage > two_level_memory_threshold) {
+    if (_mem_tracker->consumption() > two_level_memory_threshold) {
         CONVERT_TO_TWO_LEVEL(phase1_slice_two_level, phase1_slice);
         CONVERT_TO_TWO_LEVEL(phase2_slice_two_level, phase2_slice);
     }
@@ -540,14 +510,16 @@ vectorized::Columns Aggregator::_create_group_by_columns() {
     return group_by_columns;
 }
 
-void Aggregator::_serialize_to_chunk(vectorized::ConstAggDataPtr state, const vectorized::Columns& agg_result_columns) {
+void Aggregator::_serialize_to_chunk(vectorized::ConstAggDataPtr __restrict state,
+                                     const vectorized::Columns& agg_result_columns) {
     for (size_t i = 0; i < _agg_fn_ctxs.size(); i++) {
         _agg_functions[i]->serialize_to_column(_agg_fn_ctxs[i], state + _agg_states_offsets[i],
                                                agg_result_columns[i].get());
     }
 }
 
-void Aggregator::_finalize_to_chunk(vectorized::ConstAggDataPtr state, const vectorized::Columns& agg_result_columns) {
+void Aggregator::_finalize_to_chunk(vectorized::ConstAggDataPtr __restrict state,
+                                    const vectorized::Columns& agg_result_columns) {
     for (size_t i = 0; i < _agg_fn_ctxs.size(); i++) {
         _agg_functions[i]->finalize_to_column(_agg_fn_ctxs[i], state + _agg_states_offsets[i],
                                               agg_result_columns[i].get());
@@ -620,7 +592,7 @@ void Aggregator::_evaluate_agg_fn_exprs(vectorized::Chunk* chunk) {
         static_assert(sizeof(vectorized::RunTimeTypeTraits<TYPE>::CppType) == SIZE); \
         return SIZE;
 
-inline int get_byte_size_of_primitive_type(PrimitiveType type) {
+inline static int get_byte_size_of_primitive_type(PrimitiveType type) {
     switch (type) {
         RETURN_PTYPE_BYTE_SIZE(TYPE_NULL, 1);
         RETURN_PTYPE_BYTE_SIZE(TYPE_BOOLEAN, 1);

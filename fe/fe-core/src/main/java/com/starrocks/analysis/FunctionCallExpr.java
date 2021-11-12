@@ -86,6 +86,10 @@ public class FunctionCallExpr extends Expr {
                     .add("stddev").add("stddev_val").add("stddev_samp")
                     .add("variance").add("variance_pop").add("variance_pop").add("var_samp").add("var_pop").build();
 
+    // TODO(yan): add more known functions which are monotonic.
+    private static final ImmutableSet<String> MONOTONIC_FUNCTION_SET =
+            new ImmutableSet.Builder().add("year").build();
+
     public boolean isAnalyticFnCall() {
         return isAnalyticFnCall;
     }
@@ -682,21 +686,6 @@ public class FunctionCallExpr extends Expr {
             throw new AnalysisException(getFunctionNotFoundError(collectChildReturnTypes()));
         }
 
-        if (fnName.getFunction().equalsIgnoreCase("from_unixtime")
-                || fnName.getFunction().equalsIgnoreCase("date_format")) {
-            // if has only one child, it has default time format: yyyy-MM-dd HH:mm:ss.SSSSSS
-            if (children.size() > 1) {
-                final StringLiteral fmtLiteral = (StringLiteral) children.get(1);
-                if (fmtLiteral.getStringValue().equals("yyyyMMdd")) {
-                    children.set(1, new StringLiteral("%Y%m%d"));
-                } else if (fmtLiteral.getStringValue().equals("yyyy-MM-dd")) {
-                    children.set(1, new StringLiteral("%Y-%m-%d"));
-                } else if (fmtLiteral.getStringValue().equals("yyyy-MM-dd HH:mm:ss")) {
-                    children.set(1, new StringLiteral("%Y-%m-%d %H:%i:%s"));
-                }
-            }
-        }
-
         if (fnName.getFunction().equalsIgnoreCase("date_trunc")) {
             if (children.size() != 2) {
                 throw new AnalysisException("date_trunc function must have 2 arguments");
@@ -938,5 +927,14 @@ public class FunctionCallExpr extends Expr {
 
     public void setMergeAggFn() {
         isMergeAggFn = true;
+    }
+
+    @Override
+    public boolean isSelfMonotonic() {
+        FunctionName name = getFnName();
+        if (name.getDb() == null && MONOTONIC_FUNCTION_SET.contains(name.getFunction())) {
+            return true;
+        }
+        return false;
     }
 }

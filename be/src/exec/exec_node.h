@@ -29,6 +29,7 @@
 
 #include "column/vectorized_fwd.h"
 #include "common/status.h"
+#include "exec/pipeline/operator.h"
 #include "exprs/vectorized/runtime_filter_bank.h"
 #include "gen_cpp/PlanNodes_types.h"
 #include "runtime/descriptors.h"
@@ -50,7 +51,6 @@ class SlotRef;
 class TPlan;
 class TupleRow;
 class DataSink;
-class MemTracker;
 
 namespace pipeline {
 class OperatorFactory;
@@ -192,8 +192,7 @@ public:
     virtual void debug_string(int indentation_level, std::stringstream* out) const;
 
     // Convert old exec node tree to new pipeline
-    virtual std::vector<std::shared_ptr<pipeline::OperatorFactory>> decompose_to_pipeline(
-            pipeline::PipelineBuilderContext* context);
+    virtual pipeline::OpFactories decompose_to_pipeline(pipeline::PipelineBuilderContext* context);
 
     const std::vector<ExprContext*>& conjunct_ctxs() const { return _conjunct_ctxs; }
 
@@ -209,10 +208,6 @@ public:
     RuntimeProfile::Counter* memory_used_counter() const { return _memory_used_counter; }
 
     MemTracker* mem_tracker() const { return _mem_tracker.get(); }
-
-    MemTracker* expr_mem_tracker() const { return _expr_mem_tracker.get(); }
-
-    MemPool* expr_mem_pool() { return _expr_mem_pool.get(); }
 
     bool use_vectorized() { return _use_vectorized; }
 
@@ -299,13 +294,6 @@ protected:
     /// Account for peak memory used by this node
     std::shared_ptr<MemTracker> _mem_tracker;
 
-    /// MemTracker used by 'expr_mem_pool_'.
-    std::shared_ptr<MemTracker> _expr_mem_tracker;
-
-    /// MemPool for allocating data structures used by expression evaluators in this node.
-    /// Created in Prepare().
-    std::shared_ptr<MemPool> _expr_mem_pool;
-
     RuntimeProfile::Counter* _rows_returned_counter;
     RuntimeProfile::Counter* _rows_returned_rate;
     // Account for peak memory used by this node
@@ -336,52 +324,16 @@ protected:
 
     void init_runtime_profile(const std::string& name);
 
+    RuntimeState* runtime_state() { return _runtime_state; }
+
     // Executes _debug_action if phase matches _debug_phase.
     // 'phase' must not be INVALID.
     Status exec_debug_action(TExecNodePhase::type phase);
 
 private:
+    RuntimeState* _runtime_state;
     bool _is_closed;
 };
-
-#define LIMIT_EXCEEDED(tracker, state, msg)                                                       \
-    do {                                                                                          \
-        stringstream str;                                                                         \
-        str << "Memory exceed limit. " << msg << " ";                                             \
-        str << "Backend: " << BackendOptions::get_localhost() << ", ";                            \
-        if (state != nullptr) {                                                                   \
-            str << "fragment: " << print_id(state->fragment_instance_id()) << " ";                \
-        }                                                                                         \
-        str << "Used: " << tracker->consumption() << ", Limit: " << tracker->limit() << ". ";     \
-        switch (tracker->type()) {                                                                \
-        case MemTracker::NO_SET:                                                                  \
-            break;                                                                                \
-        case MemTracker::QUERY:                                                                   \
-            str << "Mem usage has exceed the limit of single query, You can change the limit by " \
-                   "set session variable exec_mem_limit.";                                        \
-            break;                                                                                \
-        case MemTracker::PROCESS:                                                                 \
-            str << "Mem usage has exceed the limit of BE";                                        \
-            break;                                                                                \
-        case MemTracker::QUERY_POOL:                                                              \
-            str << "Mem usage has exceed the limit of query pool";                                \
-            break;                                                                                \
-        case MemTracker::LOAD:                                                                    \
-            str << "Mem usage has exceed the limit of load";                                      \
-            break;                                                                                \
-        default:                                                                                  \
-            break;                                                                                \
-        }                                                                                         \
-        return Status::MemoryLimitExceeded(str.str());                                            \
-    } while (false)
-
-#define RETURN_IF_LIMIT_EXCEEDED(state, msg)                                                \
-    do {                                                                                    \
-        MemTracker* tracker = state->instance_mem_tracker()->find_limit_exceeded_tracker(); \
-        if (tracker != nullptr) {                                                           \
-            LIMIT_EXCEEDED(tracker, state, msg);                                            \
-        }                                                                                   \
-    } while (false)
 } // namespace starrocks
 
 #endif

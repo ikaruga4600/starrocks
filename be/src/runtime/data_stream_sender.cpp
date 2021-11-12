@@ -40,7 +40,6 @@
 #include "runtime/descriptors.h"
 #include "runtime/dpp_sink_internal.h"
 #include "runtime/exec_env.h"
-#include "runtime/mem_tracker.h"
 #include "runtime/raw_value.h"
 #include "runtime/row_batch.h"
 #include "runtime/runtime_state.h"
@@ -480,7 +479,6 @@ Status DataStreamSender::prepare(RuntimeState* state) {
     title << "DataStreamSender (dst_id=" << _dest_node_id << ", dst_fragments=[" << instances << "])";
     _profile = _pool->add(new RuntimeProfile(title.str()));
     SCOPED_TIMER(_profile->total_time_counter());
-    _mem_tracker = std::make_unique<MemTracker>(_profile, -1, "DataStreamSender", state->instance_mem_tracker());
     _profile->add_info_string("PartType", _TPartitionType_VALUES_TO_NAMES.at(_part_type));
     if (_part_type == TPartitionType::UNPARTITIONED || _part_type == TPartitionType::RANDOM) {
         // Randomize the order we open/transmit to channels to avoid thundering herd problems.
@@ -488,11 +486,11 @@ Status DataStreamSender::prepare(RuntimeState* state) {
         std::shuffle(_channels.begin(), _channels.end(), std::mt19937(std::random_device()()));
     } else if (_part_type == TPartitionType::HASH_PARTITIONED ||
                _part_type == TPartitionType::BUCKET_SHFFULE_HASH_PARTITIONED) {
-        RETURN_IF_ERROR(Expr::prepare(_partition_expr_ctxs, state, _row_desc, _expr_mem_tracker.get()));
+        RETURN_IF_ERROR(Expr::prepare(_partition_expr_ctxs, state, _row_desc));
     } else {
-        RETURN_IF_ERROR(Expr::prepare(_partition_expr_ctxs, state, _row_desc, _expr_mem_tracker.get()));
+        RETURN_IF_ERROR(Expr::prepare(_partition_expr_ctxs, state, _row_desc));
         for (auto iter : _partition_infos) {
-            RETURN_IF_ERROR(iter->prepare(state, _row_desc, _expr_mem_tracker.get()));
+            RETURN_IF_ERROR(iter->prepare(state, _row_desc));
         }
     }
 

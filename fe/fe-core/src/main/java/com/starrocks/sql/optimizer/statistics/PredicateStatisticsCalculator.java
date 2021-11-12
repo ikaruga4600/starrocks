@@ -88,7 +88,7 @@ public class PredicateStatisticsCalculator {
             return Statistics.buildFrom(statistics).setOutputRowCount(rowCount).
                     addColumnStatistic((ColumnRefOperator) child,
                             ColumnStatistic.buildFrom(inColumnStatistic).setDistinctValuesCount(
-                                    predicate.isNotIn() ? inColumnStatistic.getDistinctValuesCount() : inValueSize).
+                                            predicate.isNotIn() ? inColumnStatistic.getDistinctValuesCount() : inValueSize).
                                     build()).build();
         }
 
@@ -115,6 +115,9 @@ public class PredicateStatisticsCalculator {
                 selectivity = predicate.isNotNull() ? 1 - isNullColumnStatistic.getNullsFraction() :
                         isNullColumnStatistic.getNullsFraction();
             }
+            // avoid estimate selectivity too small because of the error of null fraction
+            selectivity =
+                    Math.max(selectivity, StatisticsEstimateCoefficient.IS_NULL_PREDICATE_DEFAULT_FILTER_COEFFICIENT);
             double rowCount = statistics.getOutputRowCount() * selectivity;
             return Statistics.buildFrom(statistics).setOutputRowCount(rowCount).
                     addColumnStatistics(
@@ -153,8 +156,10 @@ public class PredicateStatisticsCalculator {
                     return BinaryPredicateStatisticCalculator.estimateColumnToConstantComparison(leftChildOpt,
                             leftColumnStatistic, predicate, constant, statistics);
                 } else {
-                    return BinaryPredicateStatisticCalculator.estimateColumnToColumnComparison(leftColumnStatistic,
-                            rightColumnStatistic, predicate, statistics);
+                    return BinaryPredicateStatisticCalculator.estimateColumnToColumnComparison(
+                            leftChild, leftColumnStatistic,
+                            rightChild, rightColumnStatistic,
+                            predicate, statistics);
                 }
             } else {
                 // constant compare constant

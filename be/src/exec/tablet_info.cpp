@@ -25,7 +25,6 @@
 #include <utility>
 
 #include "runtime/mem_pool.h"
-#include "runtime/mem_tracker.h"
 #include "runtime/row_batch.h"
 #include "runtime/tuple_row.h"
 #include "util/string_parser.hpp"
@@ -164,10 +163,7 @@ std::string OlapTablePartition::debug_string(TupleDescriptor* tuple_desc) const 
 
 OlapTablePartitionParam::OlapTablePartitionParam(std::shared_ptr<OlapTableSchemaParam> schema,
                                                  const TOlapTablePartitionParam& t_param)
-        : _schema(std::move(schema)),
-          _t_param(t_param),
-          _mem_tracker(new MemTracker()),
-          _mem_pool(new MemPool(_mem_tracker.get())) {}
+        : _schema(std::move(schema)), _t_param(t_param), _mem_pool(new MemPool()) {}
 
 OlapTablePartitionParam::~OlapTablePartitionParam() = default;
 

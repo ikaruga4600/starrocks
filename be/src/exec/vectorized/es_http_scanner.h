@@ -17,7 +17,6 @@ namespace starrocks {
 class RuntimeState;
 class RuntimeProfile;
 class ExprContext;
-class MemTracker;
 class TupleDescriptor;
 
 namespace vectorized {
@@ -40,6 +39,8 @@ public:
     Status get_next(RuntimeState* runtime_state, ChunkPtr* chunk, bool* eos);
     void close();
 
+    RuntimeState* runtime_state() { return _state; }
+
 private:
     RuntimeState* _state;
     RuntimeProfile* _profile;
@@ -51,7 +52,6 @@ private:
     int _next_range;
     bool _line_eof;
     bool _batch_eof;
-    std::unique_ptr<MemTracker> _mem_tracker;
     MemPool _mem_pool;
 
     const TupleDescriptor* _tuple_desc;

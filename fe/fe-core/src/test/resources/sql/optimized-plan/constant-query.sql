@@ -51,10 +51,6 @@ PARTITION: UNPARTITIONED
 
 RESULT SINK
 
-1:Project
-|  <slot 4> : 1
-|  use vectorized: true
-|
 0:EMPTYSET
 use vectorized: true
 [end]
@@ -105,7 +101,7 @@ rollup: t0
 tabletRatio=3/3
 tabletList=10006,10008,10010
 cardinality=1
-avgRowSize=1.0
+avgRowSize=9.0
 numNodes=0
 use vectorized: true
 [end]

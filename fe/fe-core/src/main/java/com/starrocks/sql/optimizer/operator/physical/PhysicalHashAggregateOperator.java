@@ -10,6 +10,7 @@ import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.AggType;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.OperatorVisitor;
+import com.starrocks.sql.optimizer.operator.Projection;
 import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
@@ -39,7 +40,7 @@ public class PhysicalHashAggregateOperator extends PhysicalOperator {
 
     // The flag for this aggregate operator has split to
     // two stage aggregate or three stage aggregate
-    private boolean isSplit;
+    private final boolean isSplit;
 
     public PhysicalHashAggregateOperator(AggType type,
                                          List<ColumnRefOperator> groupBys,
@@ -48,7 +49,8 @@ public class PhysicalHashAggregateOperator extends PhysicalOperator {
                                          int singleDistinctFunctionPos,
                                          boolean isSplit,
                                          long limit,
-                                         ScalarOperator predicate) {
+                                         ScalarOperator predicate,
+                                         Projection projection) {
         super(OperatorType.PHYSICAL_HASH_AGG);
         this.type = type;
         this.groupBys = groupBys;
@@ -58,6 +60,7 @@ public class PhysicalHashAggregateOperator extends PhysicalOperator {
         this.isSplit = isSplit;
         this.limit = limit;
         this.predicate = predicate;
+        this.projection = projection;
     }
 
     public List<ColumnRefOperator> getGroupBys() {
@@ -142,19 +145,31 @@ public class PhysicalHashAggregateOperator extends PhysicalOperator {
         }
 
         for (CallOperator operator : aggregations.values()) {
-            if (!couldApplyStringDict(operator, dictSet)) {
-                return false;
+            if (couldApplyStringDict(operator, dictSet)) {
+                return true;
             }
         }
 
-        return true;
+        for (ColumnRefOperator groupBy : groupBys) {
+            if (childDictColumns.contains(groupBy.getId())) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private boolean couldApplyStringDict(CallOperator operator, ColumnRefSet dictSet) {
+        for (ScalarOperator child : operator.getChildren()) {
+            if (!(child instanceof ColumnRefOperator)) {
+                return false;
+            }
+        }
         ColumnRefSet usedColumns = operator.getUsedColumns();
         if (usedColumns.isIntersect(dictSet)) {
             // TODO(kks): support more functions
-            return operator.getFnName().equals(FunctionSet.COUNT);
+            return operator.getFnName().equals(FunctionSet.COUNT) ||
+                    operator.getFnName().equals(FunctionSet.MULTI_DISTINCT_COUNT);
         }
         return true;
     }

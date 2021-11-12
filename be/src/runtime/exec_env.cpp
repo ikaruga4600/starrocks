@@ -23,6 +23,7 @@
 
 #include <thread>
 
+#include "column/column_pool.h"
 #include "common/config.h"
 #include "common/logging.h"
 #include "gen_cpp/BackendService.h"
@@ -33,7 +34,6 @@
 #include "runtime/broker_mgr.h"
 #include "runtime/client_cache.h"
 #include "runtime/data_stream_mgr.h"
-#include "runtime/disk_io_mgr.h"
 #include "runtime/external_scan_context_mgr.h"
 #include "runtime/fragment_mgr.h"
 #include "runtime/heartbeat_flags.h"
@@ -117,7 +117,6 @@ Status ExecEnv::_init(const std::vector<StorePath>& store_paths) {
 
     _master_info = new TMasterInfo();
     _load_path_mgr = new LoadPathMgr(this);
-    _disk_io_mgr = new DiskIoMgr();
     _broker_mgr = new BrokerMgr(this);
     _load_channel_mgr = new LoadChannelMgr();
     _load_stream_mgr = new LoadStreamMgr();
@@ -150,6 +149,19 @@ const std::string& ExecEnv::token() const {
     return _master_info->token;
 }
 
+class SetMemTrackerForColumnPool {
+public:
+    SetMemTrackerForColumnPool(MemTracker* mem_tracker) : _mem_tracker(mem_tracker) {}
+
+    template <typename Pool>
+    void operator()() {
+        Pool::singleton()->set_mem_tracker(_mem_tracker);
+    }
+
+private:
+    MemTracker* _mem_tracker = nullptr;
+};
+
 Status ExecEnv::init_mem_tracker() {
     int64_t bytes_limit = 0;
     bool is_percent = false;
@@ -181,12 +193,17 @@ Status ExecEnv::init_mem_tracker() {
     _tablet_meta_mem_tracker = new MemTracker(-1, "tablet_meta", _mem_tracker);
     _compaction_mem_tracker = new MemTracker(-1, "compaction", _mem_tracker);
     _schema_change_mem_tracker = new MemTracker(-1, "schema_change", _mem_tracker);
-    _snapshot_mem_tracker = new MemTracker(-1, "snapshot", _mem_tracker);
     _column_pool_mem_tracker = new MemTracker(-1, "column_pool", _mem_tracker);
-    _central_column_pool_mem_tracker = new MemTracker(-1, "central_column_pool", _column_pool_mem_tracker);
-    _local_column_pool_mem_tracker = new MemTracker(-1, "local_column_pool", _column_pool_mem_tracker);
     _page_cache_mem_tracker = new MemTracker(-1, "page_cache", _mem_tracker);
-    _update_mem_tracker = new MemTracker(bytes_limit * 0.6, "update", _mem_tracker);
+    _update_mem_tracker = new MemTracker(bytes_limit * 0.6, "update", nullptr);
+    _chunk_allocator_mem_tracker = new MemTracker(-1, "chunk_allocator", _mem_tracker);
+    _clone_mem_tracker = new MemTracker(-1, "clone", _mem_tracker);
+    _consistency_mem_tracker = new MemTracker(-1, "consistency", _mem_tracker);
+
+    ChunkAllocator::init_instance(_chunk_allocator_mem_tracker, config::chunk_reserved_bytes_limit);
+
+    SetMemTrackerForColumnPool op(_column_pool_mem_tracker);
+    vectorized::ForEach<vectorized::ColumnPoolList>(op);
 
     return Status::OK();
 }
@@ -200,8 +217,6 @@ Status ExecEnv::_init_mem_tracker() {
         ss << "--min_buffer_size must be a power-of-two: " << config::min_buffer_size;
         return Status::InternalError(ss.str());
     }
-
-    RETURN_IF_ERROR(_disk_io_mgr->init(_mem_tracker));
 
     int64_t storage_cache_limit = ParseUtil::parse_mem_spec(config::storage_page_cache_limit, &is_percent);
     if (storage_cache_limit > MemInfo::physical_mem()) {
@@ -264,10 +279,6 @@ void ExecEnv::_destory() {
         delete _bfd_parser;
         _bfd_parser = nullptr;
     }
-    if (_disk_io_mgr) {
-        delete _disk_io_mgr;
-        _disk_io_mgr = nullptr;
-    }
     if (_load_path_mgr) {
         delete _load_path_mgr;
         _load_path_mgr = nullptr;
@@ -300,6 +311,18 @@ void ExecEnv::_destory() {
         delete _thread_mgr;
         _thread_mgr = nullptr;
     }
+    if (_consistency_mem_tracker) {
+        delete _consistency_mem_tracker;
+        _consistency_mem_tracker = nullptr;
+    }
+    if (_clone_mem_tracker) {
+        delete _clone_mem_tracker;
+        _clone_mem_tracker = nullptr;
+    }
+    if (_chunk_allocator_mem_tracker) {
+        delete _chunk_allocator_mem_tracker;
+        _chunk_allocator_mem_tracker = nullptr;
+    }
     if (_update_mem_tracker) {
         delete _update_mem_tracker;
         _update_mem_tracker = nullptr;
@@ -308,21 +331,9 @@ void ExecEnv::_destory() {
         delete _page_cache_mem_tracker;
         _page_cache_mem_tracker = nullptr;
     }
-    if (_local_column_pool_mem_tracker) {
-        delete _local_column_pool_mem_tracker;
-        _local_column_pool_mem_tracker = nullptr;
-    }
-    if (_central_column_pool_mem_tracker) {
-        delete _central_column_pool_mem_tracker;
-        _central_column_pool_mem_tracker = nullptr;
-    }
     if (_column_pool_mem_tracker) {
         delete _column_pool_mem_tracker;
         _column_pool_mem_tracker = nullptr;
-    }
-    if (_snapshot_mem_tracker) {
-        delete _snapshot_mem_tracker;
-        _snapshot_mem_tracker = nullptr;
     }
     if (_schema_change_mem_tracker) {
         delete _schema_change_mem_tracker;

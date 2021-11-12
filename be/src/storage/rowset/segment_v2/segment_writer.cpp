@@ -47,13 +47,10 @@ const uint32_t k_segment_magic_length = 4;
 SegmentWriter::SegmentWriter(std::unique_ptr<fs::WritableBlock> wblock, uint32_t segment_id,
                              const TabletSchema* tablet_schema, const SegmentWriterOptions& opts)
         : _segment_id(segment_id), _tablet_schema(tablet_schema), _opts(opts), _wblock(std::move(wblock)) {
-    _mem_tracker = std::make_unique<MemTracker>(-1, "segment_writer", opts.mem_tracker, true);
     CHECK_NOTNULL(_wblock.get());
 }
 
-SegmentWriter::~SegmentWriter() {
-    _mem_tracker->release(_mem_tracker->consumption());
-}
+SegmentWriter::~SegmentWriter() {}
 
 void SegmentWriter::_init_column_meta(ColumnMetaPB* meta, uint32_t* column_id, const TabletColumn& column) {
     // TODO(zc): Do we need this column_id??
@@ -103,6 +100,15 @@ Status SegmentWriter::init(uint32_t write_mbytes_per_sec __attribute__((unused))
             }
         }
 
+        if (column.type() == FieldType::OLAP_FIELD_TYPE_CHAR && column.type() != FieldType::OLAP_FIELD_TYPE_VARCHAR,
+            _opts.global_dicts != nullptr) {
+            auto iter = _opts.global_dicts->find(column.name().data());
+            if (iter != _opts.global_dicts->end()) {
+                opts.global_dict = &iter->second;
+                _global_dict_columns_valid_info[iter->first] = true;
+            }
+        }
+
         std::unique_ptr<ColumnWriter> writer;
         RETURN_IF_ERROR(ColumnWriter::create(opts, &column, _wblock.get(), &writer));
         RETURN_IF_ERROR(writer->init());
@@ -124,7 +130,6 @@ Status SegmentWriter::append_row(const RowType& row) {
         std::string encoded_key;
         encode_key(&encoded_key, row, _tablet_schema->num_short_key_columns());
         RETURN_IF_ERROR(_index_builder->add_item(encoded_key));
-        _mem_tracker->consume(static_cast<int64_t>(estimate_segment_size()) - _mem_tracker->consumption());
     }
     ++_row_count;
     return Status::OK();
@@ -167,8 +172,15 @@ Status SegmentWriter::finalize(uint64_t* segment_file_size, uint64_t* index_size
 
 // write column data to file one by one
 Status SegmentWriter::_write_data() {
+    size_t idx = 0;
     for (auto& column_writer : _column_writers) {
         RETURN_IF_ERROR(column_writer->write_data());
+        if (column_writer->is_global_dict_valid() == false) {
+            std::string col_name(_tablet_schema->columns()[idx].name().data(),
+                                 _tablet_schema->columns()[idx].name().size());
+            _global_dict_columns_valid_info[col_name] = false;
+        }
+        idx++;
     }
     return Status::OK();
 }
@@ -259,7 +271,6 @@ Status SegmentWriter::append_chunk(const vectorized::Chunk& chunk) {
         }
         ++_row_count;
     }
-    _mem_tracker->consume(static_cast<int64_t>(estimate_segment_size()) - _mem_tracker->consumption());
     return Status::OK();
 }
 
