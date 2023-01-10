@@ -222,7 +222,8 @@ public class Config extends ConfigBase {
      * LOCAL: deprecated.
      */
     @ConfField
-    public static String edit_log_type = "BDB";
+    public static String edit_log_type = "jdbc";
+    //public static String edit_log_type = "BDB";
 
     /**
      * bdbje port
@@ -250,7 +251,7 @@ public class Config extends ConfigBase {
      * if meta data delay gap exceeds *meta_delay_toleration_second*
      */
     @ConfField(mutable = true)
-    public static int meta_delay_toleration_second = 300;    // 5 min
+    public static long meta_delay_toleration_second = 300;    // 5 min
 
     /**
      * Master FE sync policy of bdbje.
@@ -1415,4 +1416,14 @@ public class Config extends ConfigBase {
      */
     @ConfField(mutable = true)
     public static int quorom_publish_wait_time_ms = 500;
+
+    @ConfField
+    public static String editlog_jdbc_url = "";
+    @ConfField
+    public static String editlog_jdbc_user = "";
+    @ConfField
+    public static String editlog_jdbc_pwd = "";
+
+    @ConfField(mutable = true)
+    public static int jdbc_edit_log_master_report_delay_tolerate = 1000;
 }

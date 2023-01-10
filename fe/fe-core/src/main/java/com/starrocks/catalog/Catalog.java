@@ -160,6 +160,10 @@ import com.starrocks.journal.JournalCursor;
 import com.starrocks.journal.JournalEntity;
 import com.starrocks.journal.bdbje.BDBJEJournal;
 import com.starrocks.journal.bdbje.Timestamp;
+import com.starrocks.journal.jdbc.HeartBeat;
+import com.starrocks.journal.jdbc.JdbcEnv;
+import com.starrocks.journal.jdbc.JdbcHA;
+import com.starrocks.journal.jdbc.JdbcJournal;
 import com.starrocks.load.DeleteHandler;
 import com.starrocks.load.ExportChecker;
 import com.starrocks.load.ExportJob;
@@ -289,6 +293,7 @@ public class Catalog {
     public static final long NEXT_ID_INIT_VALUE = 10000;
     private static final int HTTP_TIMEOUT_SECOND = 5;
     private static final int STATE_CHANGE_CHECK_INTERVAL_MS = 100;
+    private static final int HEARTBEAT_CHECK_INTERVAL_MS = 500;
     private static final int REPLAY_INTERVAL_MS = 1;
     private static final String BDB_DIR = "/bdb";
     private static final String IMAGE_DIR = "/image";
@@ -330,6 +335,9 @@ public class Catalog {
     private Daemon replayer;
     private Daemon timePrinter;
     private Daemon listener;
+    private Daemon nonMasterHeartbeatReporter;
+    private Daemon masterHeartbeatReporter;
+
     private EsRepository esRepository;  // it is a daemon, so add it here
     private StarRocksRepository starRocksRepository;
     private HiveRepository hiveRepository;
@@ -815,7 +823,7 @@ public class Catalog {
             File newMeta = new File(newDefaultMetaDir);
             if (oldMeta.exists() && newMeta.exists()) {
                 LOG.error("New default meta dir: {} and Old default meta dir: {} are both present. " +
-                        "Please make sure {} has the latest data, and remove the another one.",
+                                "Please make sure {} has the latest data, and remove the another one.",
                         newDefaultMetaDir, oldDefaultMetaDir, newDefaultMetaDir);
                 System.exit(-1);
             }
@@ -840,7 +848,8 @@ public class Catalog {
             }
         }
 
-        if (Config.edit_log_type.equalsIgnoreCase("bdb")) {
+        if (Config.edit_log_type.equalsIgnoreCase("bdb")
+                || Config.edit_log_type.equalsIgnoreCase("jdbc")) {
             File bdbDir = new File(this.bdbDir);
             if (!bdbDir.exists()) {
                 bdbDir.mkdirs();
@@ -850,9 +859,6 @@ public class Catalog {
             if (!imageDir.exists()) {
                 imageDir.mkdirs();
             }
-        } else {
-            LOG.error("Invalid edit log type: {}", Config.edit_log_type);
-            System.exit(-1);
         }
 
         // init plugin manager
@@ -877,6 +883,11 @@ public class Catalog {
 
         // 6. start state listener thread
         createStateListener();
+
+        if (Config.edit_log_type.equalsIgnoreCase("jdbc")) {
+            setSelfRole();
+        }
+
         listener.start();
     }
 
@@ -1358,6 +1369,13 @@ public class Catalog {
         updateDbUsedDataQuotaDaemon.start();
         statisticsMetaManager.start();
         statisticAutoCollector.start();
+        if (Config.edit_log_type.equalsIgnoreCase("jdbc")) {
+            if (nonMasterHeartbeatReporter != null) {
+                nonMasterHeartbeatReporter.exit();
+            }
+            createMasterHeartbeatReporter();
+            masterHeartbeatReporter.start();
+        }
     }
 
     // start threads that should running on all FE
@@ -1401,7 +1419,11 @@ public class Catalog {
         }
 
         startNonMasterDaemonThreads();
-
+        if (Config.edit_log_type.equalsIgnoreCase("jdbc")) {
+            ((JdbcJournal) editLog.getJournal()).frontendReady();
+            createNonMasterHeartbeatReporter();
+            nonMasterHeartbeatReporter.start();
+        }
         MetricRepo.init();
     }
 
@@ -1441,11 +1463,10 @@ public class Catalog {
         return false;
     }
 
-
     /**
-      * When a new node joins in the cluster for the first time, it will download image from the helper at the very beginning
-      * Exception are free to raise on initialized phase
-      */
+     * When a new node joins in the cluster for the first time, it will download image from the helper at the very beginning
+     * Exception are free to raise on initialized phase
+     */
     private void getNewImageOnStartup(Pair<String, Integer> helperNode) throws IOException {
         long localImageVersion = 0;
         Storage storage = new Storage(this.imageDir);
@@ -2362,6 +2383,80 @@ public class Catalog {
         }
     }
 
+    public void setSelfRole() {
+        JdbcEnv jdbcEnv = JdbcEnv.get();
+        HeartBeat heartBeat = jdbcEnv.getMasterHeartBeat();
+        if (heartBeat == null) {
+            boolean updateMaster = jdbcEnv.tryMaster();
+            if (updateMaster) {
+                typeTransferQueue.add(FrontendNodeType.MASTER);
+                jdbcEnv.addFrontend(FrontendOptions.getLocalHostAddress()
+                        + ":" + Config.edit_log_port);
+            } else {
+                typeTransferQueue.add(FrontendNodeType.FOLLOWER);
+            }
+            return;
+        }
+        if (!heartBeat.isExpired()) {
+            if (heartBeat.getNode().equals(FrontendOptions.getLocalHostAddress()
+                    + ":" + Config.edit_log_port)) {
+                typeTransferQueue.add(FrontendNodeType.MASTER);
+            } else {
+                typeTransferQueue.add(FrontendNodeType.FOLLOWER);
+            }
+            return;
+        }
+        boolean isMaster = jdbcEnv.tryUpdateMaster(heartBeat);
+        if (isMaster) {
+            typeTransferQueue.add(FrontendNodeType.MASTER);
+            jdbcEnv.updateLastMasterHB();
+        } else {
+            typeTransferQueue.add(FrontendNodeType.FOLLOWER);
+        }
+    }
+
+    public void createNonMasterHeartbeatReporter() {
+        nonMasterHeartbeatReporter = new Daemon("nonMasterHeartbeatReporter", HEARTBEAT_CHECK_INTERVAL_MS) {
+            @Override
+            protected void runOneCycle() {
+                JdbcEnv jdbcEnv = JdbcEnv.get();
+                jdbcEnv.reportNonMasterHeartBeat();
+                HeartBeat heartBeat = jdbcEnv.getMasterHeartBeat();
+                if (!heartBeat.isExpired()) {
+                    return;
+                }
+                long replayedId = replayedJournalId.get();
+                long maxEditlogId = editLog.getMaxJournalId();
+                if (replayedId != maxEditlogId) {
+                    LOG.info("replay not finished , editlog is {} replayed is {}", maxEditlogId, replayedId);
+                    return;
+                }
+                boolean isMaster = jdbcEnv.tryUpdateMaster(heartBeat);
+                if (isMaster) {
+                    typeTransferQueue.add(FrontendNodeType.MASTER);
+                    jdbcEnv.updateLastMasterHB();
+                } else {
+                    typeTransferQueue.add(FrontendNodeType.FOLLOWER);
+                }
+            }
+        };
+    }
+
+    public void createMasterHeartbeatReporter() {
+        masterHeartbeatReporter = new Daemon("masterHeartbeatReporter", HEARTBEAT_CHECK_INTERVAL_MS) {
+            @Override
+            protected void runOneCycle() {
+                JdbcEnv jdbcEnv = JdbcEnv.get();
+                boolean isMaster = jdbcEnv.reportMasterHeartBeat();
+                if (!isMaster) {
+                    typeTransferQueue.add(FrontendNodeType.UNKNOWN);
+                } else {
+                    jdbcEnv.updateLastMasterHB();
+                }
+            }
+        };
+    }
+
     public void createStateListener() {
         listener = new Daemon("stateListener", STATE_CHANGE_CHECK_INTERVAL_MS) {
             @Override
@@ -2543,20 +2638,25 @@ public class Catalog {
 
             fe = new Frontend(role, nodeName, host, editLogPort);
             frontends.put(nodeName, fe);
-            BDBHA bdbha = (BDBHA) haProtocol;
-            if (role == FrontendNodeType.FOLLOWER || role == FrontendNodeType.REPLICA) {
-                bdbha.addHelperSocket(host, editLogPort);
+            if (Config.edit_log_type.equalsIgnoreCase("bdb")) {
+                BDBHA bdbha = (BDBHA) haProtocol;
+                if (role == FrontendNodeType.FOLLOWER || role == FrontendNodeType.REPLICA) {
+                    bdbha.addHelperSocket(host, editLogPort);
+                    helperNodes.add(Pair.create(host, editLogPort));
+                    bdbha.addUnstableNode(host, getFollowerCnt());
+                }
+
+                // In some cases, for example, fe starts with the outdated meta, the node name that has been dropped
+                // will remain in bdb.
+                // So we should remove those nodes before joining the group,
+                // or it will throws NodeConflictException (New or moved node:xxxx, is configured with the socket address:
+                // xxx. It conflicts with the socket already used by the member: xxxx)
+                bdbha.removeNodeIfExist(host, editLogPort);
+            } else if (Config.edit_log_type.equalsIgnoreCase("jdbc")) {
                 helperNodes.add(Pair.create(host, editLogPort));
-                bdbha.addUnstableNode(host, getFollowerCnt());
+                JdbcHA jdbcHA = (JdbcHA) haProtocol;
+                jdbcHA.addNode(nodeName);
             }
-
-            // In some cases, for example, fe starts with the outdated meta, the node name that has been dropped
-            // will remain in bdb.
-            // So we should remove those nodes before joining the group,
-            // or it will throws NodeConflictException (New or moved node:xxxx, is configured with the socket address:
-            // xxx. It conflicts with the socket already used by the member: xxxx)
-            bdbha.removeNodeIfExist(host, editLogPort);
-
             editLog.logAddFrontend(fe);
         } finally {
             unlock();
@@ -2585,8 +2685,13 @@ public class Catalog {
                 haProtocol.removeElectableNode(fe.getNodeName());
                 helperNodes.remove(Pair.create(host, port));
 
-                BDBHA ha = (BDBHA) haProtocol;
-                ha.removeUnstableNode(host, getFollowerCnt());
+                if (Config.edit_log_type.equalsIgnoreCase("bdb")) {
+                    BDBHA ha = (BDBHA) haProtocol;
+                    ha.removeUnstableNode(host, getFollowerCnt());
+                } else if (Config.edit_log_type.equalsIgnoreCase("bdb")) {
+                    JdbcHA jdbcHA = (JdbcHA) haProtocol;
+                    jdbcHA.dropNode(nodeName);
+                }
             }
             editLog.logRemoveFrontend(fe);
         } finally {
@@ -3118,10 +3223,12 @@ public class Catalog {
             } finally {
                 db.readUnlock();
             }
-            StatementBase statementBase = SqlParserUtils.parseAndAnalyzeStmt(createTableStmt.get(0), ConnectContext.get());
+            StatementBase statementBase =
+                    SqlParserUtils.parseAndAnalyzeStmt(createTableStmt.get(0), ConnectContext.get());
             if (statementBase instanceof CreateTableStmt) {
                 CreateTableStmt parsedCreateTableStmt =
-                        (CreateTableStmt) SqlParserUtils.parseAndAnalyzeStmt(createTableStmt.get(0), ConnectContext.get());
+                        (CreateTableStmt) SqlParserUtils.parseAndAnalyzeStmt(createTableStmt.get(0),
+                                ConnectContext.get());
                 parsedCreateTableStmt.setTableName(stmt.getTableName());
                 if (stmt.isSetIfNotExists()) {
                     parsedCreateTableStmt.setIfNotExists();
@@ -3140,7 +3247,8 @@ public class Catalog {
             throws DdlException, AnalysisException {
         PartitionDesc partitionDesc = addPartitionClause.getPartitionDesc();
         if (partitionDesc instanceof SingleRangePartitionDesc) {
-            addPartitions(db, tableName, ImmutableList.of((SingleRangePartitionDesc) partitionDesc), addPartitionClause);
+            addPartitions(db, tableName, ImmutableList.of((SingleRangePartitionDesc) partitionDesc),
+                    addPartitionClause);
         } else if (partitionDesc instanceof MultiRangePartitionDesc) {
             db.readLock();
             RangePartitionInfo rangePartitionInfo;
@@ -3296,10 +3404,12 @@ public class Catalog {
 
                 copiedTable.getPartitionInfo().setDataProperty(partitionId, dataProperty);
                 copiedTable.getPartitionInfo().setTabletType(partitionId, singleRangePartitionDesc.getTabletType());
-                copiedTable.getPartitionInfo().setReplicationNum(partitionId, singleRangePartitionDesc.getReplicationNum());
+                copiedTable.getPartitionInfo()
+                        .setReplicationNum(partitionId, singleRangePartitionDesc.getReplicationNum());
                 copiedTable.getPartitionInfo().setIsInMemory(partitionId, singleRangePartitionDesc.isInMemory());
 
-                Partition partition = createPartition(db, copiedTable, partitionId, partitionName, version, tabletIdSet);
+                Partition partition =
+                        createPartition(db, copiedTable, partitionId, partitionName, version, tabletIdSet);
 
                 partitionList.add(partition);
                 tabletIdSetForAll.addAll(tabletIdSet);
@@ -3621,9 +3731,11 @@ public class Catalog {
             MaterializedIndexMeta indexMeta = table.getIndexIdToMeta().get(indexId);
 
             // create tablets
-            TabletMeta tabletMeta = new TabletMeta(db.getId(), table.getId(), partitionId, indexId, indexMeta.getSchemaHash(),
-                    storageMedium);
-            createTablets(db.getClusterName(), index, ReplicaState.NORMAL, distributionInfo, partition.getVisibleVersion(),
+            TabletMeta tabletMeta =
+                    new TabletMeta(db.getId(), table.getId(), partitionId, indexId, indexMeta.getSchemaHash(),
+                            storageMedium);
+            createTablets(db.getClusterName(), index, ReplicaState.NORMAL, distributionInfo,
+                    partition.getVisibleVersion(),
                     replicationNum, tabletMeta, tabletIdSet);
             if (index.getId() != table.getBaseIndexId()) {
                 // add rollup index to partition
@@ -3705,7 +3817,8 @@ public class Catalog {
                     }
                     List<CreateReplicaTask> tasks = buildCreateReplicaTasks(dbId, table, partition);
                     for (CreateReplicaTask task : tasks) {
-                        List<Long> signatures = taskSignatures.computeIfAbsent(task.getBackendId(), k -> new ArrayList<>());
+                        List<Long> signatures =
+                                taskSignatures.computeIfAbsent(task.getBackendId(), k -> new ArrayList<>());
                         signatures.add(task.getSignature());
                     }
                     sendCreateReplicaTasks(tasks, countDownLatch);
@@ -3930,7 +4043,7 @@ public class Catalog {
         double bfFpp = 0;
         try {
             bfColumns = PropertyAnalyzer.analyzeBloomFilterColumns(properties, baseSchema,
-                olapTable.getKeysType() == KeysType.PRIMARY_KEYS);
+                    olapTable.getKeysType() == KeysType.PRIMARY_KEYS);
             if (bfColumns != null && bfColumns.isEmpty()) {
                 bfColumns = null;
             }
@@ -4107,9 +4220,10 @@ public class Catalog {
                         DynamicPartitionUtil.checkAndSetDynamicPartitionProperty(olapTable, properties);
                         if (olapTable.dynamicPartitionExists() && olapTable.getColocateGroup() != null) {
                             HashDistributionInfo info = (HashDistributionInfo) distributionInfo;
-                            if (info.getBucketNum() != olapTable.getTableProperty().getDynamicPartitionProperty().getBuckets()) {
+                            if (info.getBucketNum() !=
+                                    olapTable.getTableProperty().getDynamicPartitionProperty().getBuckets()) {
                                 throw new DdlException("dynamic_partition.buckets should equal the distribution buckets"
-                                                       + " if creating a colocate table");
+                                        + " if creating a colocate table");
                             }
                         }
                         if (hasMedium) {
@@ -4151,7 +4265,8 @@ public class Catalog {
                 createTblSuccess = db.createTableWithLock(olapTable, false);
                 if (!createTblSuccess) {
                     if (!stmt.isSetIfNotExists()) {
-                        ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName, "table already exists");
+                        ErrorReport.reportDdlException(ErrorCode.ERR_CANT_CREATE_TABLE, tableName,
+                                "table already exists");
                     } else {
                         LOG.info("Create table[{}] which already exists", tableName);
                         return;
@@ -4478,7 +4593,6 @@ public class Catalog {
             // storage type
             sb.append(",\n\"").append(PropertyAnalyzer.PROPERTIES_STORAGE_FORMAT).append("\" = \"");
             sb.append(olapTable.getStorageFormat()).append("\"");
-
 
             // storage media
             Map<String, String> properties = olapTable.getTableProperty().getProperties();
@@ -5963,7 +6077,7 @@ public class Catalog {
 
         Table table = db.getTable(tableName);
         if (table == null) {
-            throw new DdlException("the DB " + dbName +  " table: " + tableName + "isn't  exist"); 
+            throw new DdlException("the DB " + dbName + " table: " + tableName + "isn't  exist");
         }
 
         if (table instanceof OlapTable) {
@@ -5974,7 +6088,8 @@ public class Catalog {
             } else {
                 property.put(PropertyAnalyzer.ENABLE_LOW_CARD_DICT_TYPE, PropertyAnalyzer.ABLE_LOW_CARD_DICT);
             }
-            ModifyTablePropertyOperationLog info = new ModifyTablePropertyOperationLog(db.getId(), table.getId(), property);
+            ModifyTablePropertyOperationLog info =
+                    new ModifyTablePropertyOperationLog(db.getId(), table.getId(), property);
             editLog.logSetHasForbitGlobalDict(info);
         }
     }
@@ -6720,7 +6835,7 @@ public class Catalog {
                             + cluster.getBackendIdList().size());
                 }
                 // The number of BE in cluster is not same as in SystemInfoService, when perform 'ALTER
-                // SYSTEM ADD BACKEND TO ...' or 'ALTER SYSTEM ADD BACKEND ...', because both of them are 
+                // SYSTEM ADD BACKEND TO ...' or 'ALTER SYSTEM ADD BACKEND ...', because both of them are
                 // for adding BE to some Cluster, but loadCluster is after loadBackend.
                 cluster.setBackendIdList(latestBackendIds);
 
@@ -7062,7 +7177,8 @@ public class Catalog {
                 partitionInfo.setReplicationNum(newPartitionId, partitionInfo.getReplicationNum(oldPartitionId));
                 partitionInfo.setDataProperty(newPartitionId, partitionInfo.getDataProperty(oldPartitionId));
 
-                Partition newPartition = createPartition(db, copiedTbl, newPartitionId, newPartitionName, null, tabletIdSet);
+                Partition newPartition =
+                        createPartition(db, copiedTbl, newPartitionId, newPartitionName, null, tabletIdSet);
                 newPartitions.add(newPartition);
             }
             buildPartitions(db, copiedTbl, newPartitions);

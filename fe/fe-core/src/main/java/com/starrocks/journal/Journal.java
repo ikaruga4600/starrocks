@@ -60,5 +60,4 @@ public interface Journal {
 
     // Get all the dbs' name
     public List<Long> getDatabaseNames();
-
 }

@@ -121,8 +121,10 @@ public class Frontend implements Writable {
         boolean isChanged = false;
         if (hbResponse.getStatus() == HbStatus.OK) {
             if (!isAlive && !isReplay) {
-                BDBHA ha = (BDBHA) Catalog.getCurrentCatalog().getHaProtocol();
-                ha.removeUnstableNode(host, Catalog.getCurrentCatalog().getFollowerCnt());
+                if (Config.edit_log_type.equalsIgnoreCase("bdb")) {
+                    BDBHA ha = (BDBHA) Catalog.getCurrentCatalog().getHaProtocol();
+                    ha.removeUnstableNode(host, Catalog.getCurrentCatalog().getFollowerCnt());
+                }
             }
             isAlive = true;
             queryPort = hbResponse.getQueryPort();

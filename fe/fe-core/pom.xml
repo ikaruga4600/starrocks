@@ -510,6 +510,15 @@ under the License.
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-aws</artifactId>
         </dependency>
+
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+        </dependency>
     </dependencies>
 
     <build>

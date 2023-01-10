@@ -51,6 +51,7 @@ import com.starrocks.journal.JournalCursor;
 import com.starrocks.journal.JournalEntity;
 import com.starrocks.journal.bdbje.BDBJEJournal;
 import com.starrocks.journal.bdbje.Timestamp;
+import com.starrocks.journal.jdbc.JdbcJournal;
 import com.starrocks.load.DeleteHandler;
 import com.starrocks.load.DeleteInfo;
 import com.starrocks.load.ExportJob;
@@ -92,7 +93,15 @@ public class EditLog {
     private Journal journal;
 
     public EditLog(String nodeName) {
-        journal = new BDBJEJournal(nodeName);
+        if (Config.edit_log_type.equalsIgnoreCase("bdb")) {
+            journal = new BDBJEJournal(nodeName);
+            return;
+        }
+        if (Config.edit_log_type.equalsIgnoreCase("jdbc")) {
+            journal = new JdbcJournal(nodeName);
+            return;
+        }
+        throw new RuntimeException("unknown edit_log_type: " + Config.edit_log_type);
     }
 
     public long getMaxJournalId() {
